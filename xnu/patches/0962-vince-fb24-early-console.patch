@@ -59,8 +59,8 @@ index 9fd1cb9..654960e 100644
  	/* Stage 0: white 64x32 band, no stack or page tables needed. */
 -#if defined(TOPAZ_4K)
 +#if defined(VINCE)
-+	/* vince: 1080x2160 packed 24 bpp, stride 3240, buffer at 0x90001000; bottom rows */
-+	MOV64	x0, (0x90001000 + 2128 * 3240)
++	/* vince: 1080x2160 packed 24 bpp, stride 3240 (rosy: 720x1440, 2160; makedefs/MakeInc.def), buffer at 0x90001000; bottom rows */
++	MOV64	x0, (0x90001000 + (VINCE_PANEL_H - 32) * VINCE_PANEL_STRIDE)
 +#elif defined(TOPAZ_4K)
  	MOV64	x0, (0x5c000000 + 2368 * 4320)	/* topaz splash framebuffer */
  #else
@@ -69,7 +69,7 @@ index 9fd1cb9..654960e 100644
  	mov		w1, #-1
  	mov		x2, #32
 +#if defined(VINCE)
-+	mov		x4, #3240
++	mov		x4, #VINCE_PANEL_STRIDE
 +#else
  	mov		x4, #4320
 +#endif
@@ -127,9 +127,9 @@ index 9429767..89acdcd 100644
 +/* vince: 1080x2160, packed 24 bpp (bytes B,G,R), stride 3240, left lit by LK at 0x90001000 */
 +static volatile uint8_t *early_fb = (volatile uint8_t *)(uintptr_t)0x90001000;
 +#define EARLY_BPP 3u
-+#define EARLY_WIDTH 1080u
-+#define EARLY_HEIGHT 2160u
-+#define EARLY_STRIDE_BYTES 3240u
++#define EARLY_WIDTH (VINCE_PANEL_W + 0u)	/* 1080x2160x3240, rosy 720x1440x2160: MakeInc.def */
++#define EARLY_HEIGHT (VINCE_PANEL_H + 0u)
++#define EARLY_STRIDE_BYTES (VINCE_PANEL_STRIDE + 0u)
 +#elif defined(TOPAZ_4K)
 +static volatile uint8_t *early_fb = (volatile uint8_t *)(uintptr_t)0x5c000000;  /* topaz splash */
 +#define EARLY_BPP 4u

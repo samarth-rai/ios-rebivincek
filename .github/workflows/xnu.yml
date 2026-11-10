@@ -36,6 +36,8 @@ env:
   # variant (GICv2, 24 bpp console, boot CPU 0). Both are read by makedefs/MakeInc.def.
   TOPAZ_4K: "1"
   VINCE: "1"
+  # rosy (Redmi 5, SDM450): the vince board with a 720x1440 panel (xnu/patches/0960, makedefs/MakeInc.def)
+  ROSY: "1"
   # ccache: xnu is ~2000 compiles; a patch usually changes a few of them
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_BASEDIR: ${{ github.workspace }}

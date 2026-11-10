@@ -35,9 +35,9 @@ index 1d3ee17..714c7eb 100644
 +#if defined(VINCE)
 +/* The panel as LK left it: packed 24 bpp (bytes B, G, R), 1080x2160, in DDR. */
 +#define VINCE_FB_PHYS           0x90001000ull
-+#define VINCE_FB_W              1080
-+#define VINCE_FB_H              2160
-+#define VINCE_FB_STRIDE         3240
++#define VINCE_FB_W              VINCE_PANEL_W           /* 1080 x 2160, stride 3240; rosy 720 x 1440, 2160 */
++#define VINCE_FB_H              VINCE_PANEL_H           /* (-D flags of makedefs/MakeInc.def) */
++#define VINCE_FB_STRIDE         VINCE_PANEL_STRIDE
 +
 +bool
 +AppleCLCD::startVince(void)

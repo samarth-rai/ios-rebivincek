@@ -607,9 +607,9 @@ index d2f4fa1..ea69eae 100644
   * app-switcher gesture.
   */
  #define SWEET_TOUCH_EDGE_PX 48
-+#define SWEET_TOUCH_PANEL_W 1080
++#define SWEET_TOUCH_PANEL_W VINCE_PANEL_W           /* 1080; rosy 720 (makedefs/MakeInc.def) */
 +#if defined(VINCE)
-+#define SWEET_TOUCH_PANEL_H 2160        /* vince panel (SweetFramebuffer.cpp VINCE_FB_H) */
++#define SWEET_TOUCH_PANEL_H VINCE_PANEL_H   /* vince panel (SweetFramebuffer.cpp VINCE_FB_H) */
 +#else
 +#define SWEET_TOUCH_PANEL_H 2400
 +#endif
