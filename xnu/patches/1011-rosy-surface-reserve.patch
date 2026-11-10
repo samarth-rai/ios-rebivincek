@@ -1,0 +1,84 @@
+From: rosy port
+Subject: [PATCH] 1011 rosy: contiguous buffers for screen-sized surfaces without the GPU (sweetres=N)
+
+backboardd could not create its 1125x2436 surfaces on rosy (768 MiB): with 4 KiB kernel pages and
+16 KiB user pages IOBufferMemoryDescriptor makes every surface buffer one physically contiguous piece,
+and no 11 MB piece was left once userland ran (vm_page_find_contiguous(num=2744) found 0 pages,
+create -> 0xe00002bd). The reserve of 0949 (gpu=1 only) is now also taken without the GPU: sweetres=N
+buffers of 12 MB (rosy: 6 by default, others: 0 = unchanged), when IOCoreSurfaceRoot starts.
+---
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -174,6 +174,44 @@
+ /* freed while something still held the memory (a mapping, the GPU): ours again once it lets go */
+ static IOBufferMemoryDescriptor *sweet_res_wait[2 * SWEET_RES_COUNT];
+ 
++/*
++ * The same buffers without the GPU (boot-arg sweetres=N, 0 = none; rosy: 6 unless told otherwise).
++ * With 4 KiB kernel pages and 16 KiB user pages every surface buffer is asked for with 16 KiB
++ * alignment, and IOBufferMemoryDescriptor gives that only as one physically contiguous piece. For a
++ * screen (11 MB) there was no such piece left once userland ran on rosy's 768 MiB: every screen-sized
++ * surface of backboardd failed with kIOReturnNoMemory after two scans of all of RAM, and nothing was
++ * drawn. They are taken when IOCoreSurfaceRoot starts, while memory is still in one piece.
++ */
++static unsigned sweet_res_count = SWEET_RES_COUNT;
++
++static bool
++sweet_res_wanted(void)
++{
++	static int wanted = -1;
++
++	if (wanted < 0) {
++#if defined(ROSY)
++		uint32_t n = 6;
++#else
++		uint32_t n = 0;
++#endif
++		uint32_t gpu = 0;
++		(void)PE_parse_boot_argn("sweetres", &n, sizeof(n));
++		if (PE_parse_boot_argn("gpu", &gpu, sizeof(gpu)) && gpu != 0) {
++			wanted = 1;             /* gpu=1 keeps its ten */
++		} else {
++			if (n > SWEET_RES_COUNT) {
++				n = SWEET_RES_COUNT;
++			}
++			if (n != 0) {
++				sweet_res_count = n;
++			}
++			wanted = n != 0;
++		}
++	}
++	return wanted != 0;
++}
++
+ static void
+ sweet_res_fill(void)
+ {
+@@ -185,7 +223,7 @@
+ 		return;
+ 	}
+ 	filled = true;
+-	for (; n < SWEET_RES_COUNT; n++) {
++	for (; n < sweet_res_count; n++) {
+ 		mem[n] = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+ 		    kIODirectionInOut | kIOMemoryKernelUserShared | kIOMemoryPhysicallyContiguous, SWEET_RES_SIZE,
+ 		    0x0000000FFFFFC000ull);
+@@ -749,6 +787,9 @@
+ 	setProperty(kIOUserClientClassKey, "IOSurfaceRootUserClient");
+ 	registerService();
+ 	IOLog("SWEET SURF: IOCoreSurfaceRoot registered\n");
++	if (sweet_res_wanted()) {
++		sweet_res_fill();       /* now, before userland fragments memory */
++	}
+ 	return true;
+ }
+ 
+@@ -1202,7 +1243,7 @@
+ 			 * pages came next. (The descriptor keeps them: RedwoodGPU gives them to the GPU.)
+ 			 */
+ 			uint64_t take = gpu_low ? sweet_round_upage(s->allocSize + 64ull * s->bytesPerRow) : s->allocSize;
+-			if (gpu_low) {
++			if (gpu_low || sweet_res_wanted()) {
+ 				sweet_res_fill();
+ 				if (s->width >= 1000 && s->height >= 2000 && s->bytesPerElement == 4) {
+ 					mem = sweet_res_take(take);

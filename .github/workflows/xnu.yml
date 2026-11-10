@@ -136,6 +136,8 @@ jobs:
           else
             echo "MISSING reset patch (1010 / 0963)"; missing=1
           fi
+          # 1011: screen-sized surface buffers set aside without the GPU (a patch with context: check it applied)
+          if grep -q sweet_res_wanted dxb/xnu/iokit/Kernel/arm/SweetSurface.cpp; then echo "ok   SweetSurface.cpp (1011 surface reserve)"; else echo "MISSING patch 1011 in SweetSurface.cpp"; missing=1; fi
           echo "board: ROSY=$ROSY"
           [ -z "${missing:-}" ]
 
