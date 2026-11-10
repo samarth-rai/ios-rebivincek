@@ -69,9 +69,17 @@ def main():
     ap.add_argument('--board', default='vince', choices=sorted(BOARDS),
                     help='phone: selects the Apple Device Tree (RAM, panel). rosy has no prebuilt loader or '
                          'device tree in the repository: pass --loader and --dtb')
+    ap.add_argument('--ram', default='low', choices=['low', 'wide'],
+                    help='rosy only: kernel RAM layout. low = 0x50000000 + 768 MiB (no GPU memory carved out); '
+                         'wide = 0x48000000 + 896 MiB, of which the kernel keeps 700 MiB, for use with '
+                         'boot-arg vinceram3g=1 (adds 1536 MiB) and for the GPU')
     a = ap.parse_args()
     modname, img_name, lk_ramdisk = BOARDS[a.board]
     board = __import__(modname)
+    if a.ram != 'low':
+        if not hasattr(board, 'set_layout'):
+            sys.exit(f'--ram {a.ram} is not available for --board {a.board}')
+        board.set_layout(a.ram)
     if lk_ramdisk is None:
         lk_ramdisk = board.LK_RAMDISK_PA
     if a.board != 'vince' and (a.loader == ap.get_default('loader') or a.dtb == ap.get_default('dtb')):

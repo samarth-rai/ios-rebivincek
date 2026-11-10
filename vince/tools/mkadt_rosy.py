@@ -26,6 +26,18 @@ from mkadt import cstr  # noqa: E402
 
 PHYS_BASE = 0x50000000
 MEM_SIZE = 0x30000000	# 768 MiB: 0x50000000 - 0x7fffffff
+# Kernel RAM layouts (vince_pack.py --ram). Both end at 0x80000000, which the vince patches assume.
+#   low   0x50000000 + 768 MiB. Patch 0987 carves the GPU memory out only above 768 MiB, so nothing is
+#         carved: all 768 MiB are the kernel's, the GPU (adreno=, gpu=) must stay off, vinceram3g does nothing.
+#   wide  0x48000000 + 896 MiB, the vince arrangement: 0987 keeps the top 196 MiB (0x73c00000-0x7fffffff) for
+#         the GPU, which leaves 700 MiB, and boot-arg vinceram3g=1 (0995) adds 0xa0000000-0xffffffff (1536 MiB).
+#         The payload must then fit in 0x43600000-0x48000000 (74 MiB; the packer checks).
+LAYOUTS = {'low': (0x50000000, 0x30000000), 'wide': (0x48000000, 0x38000000)}
+
+
+def set_layout(name):
+    global PHYS_BASE, MEM_SIZE
+    PHYS_BASE, MEM_SIZE = LAYOUTS[name]
 FB_W, FB_H, FB_STRIDE = 720, 1440, 2160
 FB, FB_SIZE = 0x90001000, 0x2f8000	# 720 * 1440 * 3 bytes, rounded up to 4 KiB
 SWEET_ECID = 0x524f535900000001	# 'ROSY' + 1, synthetic
