@@ -259,7 +259,7 @@ index 0000000..74e7c0b
 +vd_dump_threads(void)
 +{
 +	thread_t list[VD_MAX_THREADS];
-+	unsigned int count = 0, total = 0;
++	unsigned int count = 0, total = 0, parked = 0, all = 0;
 +	thread_t th;
 +
 +	task_lock(kernel_task);
@@ -270,7 +270,7 @@ index 0000000..74e7c0b
 +		}
 +	}
 +	task_unlock(kernel_task);
-+
++	(void)PE_parse_boot_argn("vincediag_all", &all, sizeof(all));   /* 1: also list parked workers */
 +	unsigned int waiting = 0, runnable = 0;
 +	for (unsigned int i = 0; i < count; i++) {
 +		th = list[i];
@@ -298,14 +298,14 @@ index 0000000..74e7c0b
 +			shown++;
 +		}
 +		if (nbt == 0) {
-+			/* blocked with a continuation: the stack is gone, the continuation says what it is */
++			/* blocked with a continuation (a parked worker): listed only with vincediag_all=1, else counted */
 +			vd_name(a, 40, (uint64_t)(uintptr_t)th->continuation, 26);
-+			printf("%llu %c cont %s\n", (unsigned long long)th->thread_id, sc, a);
++			if (all) { printf("%llu %c cont %s\n", (unsigned long long)th->thread_id, sc, a); } else { parked++; }
 +		} else {
 +			printf("%llu %c %s<%s<%s\n", (unsigned long long)th->thread_id, sc, a, b, c);
 +		}
 +	}
-+	printf("VDIAG threads=%u (listed %u) waiting=%u runnable=%u\n", total, count, waiting, runnable);
++	printf("VDIAG threads=%u (listed %u) waiting=%u runnable=%u parked, not shown=%u\n", total, count, waiting, runnable, parked);
 +}
 +
 +static void
