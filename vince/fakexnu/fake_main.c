@@ -5,8 +5,8 @@
  */
 #include <stdint.h>
 #include "console.h"
+#include "../shim/board.h"	/* FB_BASE, PANEL_* */
 
-#define FB_BASE 0x90001000UL
 #define WHITE	0xffffffffU
 #define YELLOW	0xffffff00U
 #define GREEN	0xff00ff00U
@@ -55,7 +55,7 @@ void fake_main(uint64_t ba_pa, uint64_t head)
 	int bad = 0;
 
 	con_init();
-	con_add_target(FB_BASE, 1080, 2160, 3240, 3);
+	con_add_target(FB_BASE, PANEL_W, PANEL_H, PANEL_STRIDE, PANEL_BPP);
 	ps("FAKE XNU reached (loader test)"); pe(GREEN);
 	ps("pc "); px(head, 9); ps(" EL "); px((rsr("currentel") >> 2) & 3, 1);
 	ps(" SCTLR "); px(rsr("sctlr_el1"), 8); pe(WHITE);

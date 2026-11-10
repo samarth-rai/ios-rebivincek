@@ -113,24 +113,24 @@ int con_add_target(uintptr_t base, uint32_t w, uint32_t h, uint32_t stride, uint
 	return 0;
 }
 
-int con_line(const char *s, uint32_t color)
+/* Columns that fit on the first target (a 720 pixel panel shows 43 of the 64); a longer line is wrapped. */
+static int vis_cols(void)
 {
-	int idx;
-	if (nlines < CON_MAXROWS) {
-		idx = nlines++;
-	} else {
-		idx = CON_MAXROWS - 1;	/* log full: keep overwriting the last row */
+	int c = CON_MAXCOLS;
+	if (ntg > 0 && tg[0].w > 2 * MARGIN_X + CELL_W) {
+		int v = (int)((tg[0].w - 2 * MARGIN_X) / CELL_W);
+		if (v < c)
+			c = v;
 	}
-	con_set(idx, s, color);
-	return idx;
+	return c;
 }
 
-void con_set(int idx, const char *s, uint32_t color)
+static void set_n(int idx, const char *s, int max, uint32_t color)
 {
 	if (idx < 0 || idx >= CON_MAXROWS)
 		return;
 	int i = 0;
-	while (s[i] && i < CON_MAXCOLS) {
+	while (s[i] && i < max && i < CON_MAXCOLS) {
 		lines[idx][i] = s[i];
 		i++;
 	}
@@ -140,4 +140,27 @@ void con_set(int idx, const char *s, uint32_t color)
 		nlines = idx + 1;
 	for (int k = 0; k < ntg; k++)
 		draw_row(&tg[k], idx);
+}
+
+int con_line(const char *s, uint32_t color)
+{
+	int cols = vis_cols(), idx;
+	do {
+		int n = 0;
+		while (s[n] && n < cols)
+			n++;
+		if (nlines < CON_MAXROWS) {
+			idx = nlines++;
+		} else {
+			idx = CON_MAXROWS - 1;	/* log full: keep overwriting the last row */
+		}
+		set_n(idx, s, n, color);
+		s += n;
+	} while (*s);
+	return idx;
+}
+
+void con_set(int idx, const char *s, uint32_t color)
+{
+	set_n(idx, s, CON_MAXCOLS, color);
 }

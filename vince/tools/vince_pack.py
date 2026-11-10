@@ -33,6 +33,8 @@ CMDLINE = (b"androidboot.hardware=qcom msm_rtb.filter=0x237 ehci-hcd.park=3 "
            b"androidboot.console=ttyMSM0 earlycon=msm_serial_dm,0x78af000 ")
 # Where LK puts the ramdisk in the measured runs (M1/M2) and where xnu's RAM starts: the payload must fit between
 LK_RAMDISK_PA = 0x13600000
+# --board: Apple Device Tree module, boot image name, ramdisk address (None = that module's LK_RAMDISK_PA)
+BOARDS = {'vince': ('mkadt_vince', b'vince-m3b', LK_RAMDISK_PA), 'rosy': ('mkadt_rosy', b'rosy-m3b', None)}
 DEFAULT_CMDLINE = 'debug=0xc serial=3 cpus=1 keepsyms=1'
 
 
@@ -40,11 +42,11 @@ def pad(b):
     return b + b"\0" * (-len(b) % PAGE)
 
 
-def make_boot_img(loader_image, dtb, ramdisk):
+def make_boot_img(loader_image, dtb, ramdisk, name=b"vince-m3b"):
     kz = gzip.compress(loader_image, 9, mtime=0) + dtb
     h = b"ANDROID!"
     h += struct.pack("<10I", len(kz), KERNEL_ADDR, len(ramdisk), RAMDISK_ADDR, 0, SECOND_ADDR, TAGS_ADDR, PAGE, 0, OS_VERSION)
-    h += b"vince-m3b".ljust(16, b"\0")
+    h += name.ljust(16, b"\0")
     h += CMDLINE.ljust(512, b"\0")
     sha = hashlib.sha1()
     for blob in (kz, ramdisk, b""):
@@ -64,7 +66,16 @@ def main():
     ap.add_argument('--ramdisk', help='root image for md0 (boot with rd=md0), optional')
     ap.add_argument('--loader', default=os.path.join(HERE, '..', 'prebuilt', 'loader.Image'))
     ap.add_argument('--dtb', default=os.path.join(HERE, '..', 'prebuilt', 'stock-appended.dtb'))
+    ap.add_argument('--board', default='vince', choices=sorted(BOARDS),
+                    help='phone: selects the Apple Device Tree (RAM, panel). rosy has no prebuilt loader or '
+                         'device tree in the repository: pass --loader and --dtb')
     a = ap.parse_args()
+    modname, img_name, lk_ramdisk = BOARDS[a.board]
+    board = __import__(modname)
+    if lk_ramdisk is None:
+        lk_ramdisk = board.LK_RAMDISK_PA
+    if a.board != 'vince' and (a.loader == ap.get_default('loader') or a.dtb == ap.get_default('dtb')):
+        sys.exit(f'--board {a.board} needs --loader and --dtb (the prebuilt ones are for vince)')
 
     loader = open(a.loader, 'rb').read()
     assert loader[56:60] == b'ARM\x64', 'loader is not an arm64 Image'
@@ -73,16 +84,16 @@ def main():
 
     with tempfile.TemporaryDirectory() as td:
         adt_path = os.path.join(td, 'vince.adt')
-        open(adt_path, 'wb').write(adt.serialize(mkadt_vince.build()))
+        open(adt_path, 'wb').write(adt.serialize(board.build()))
         payload, info = mkpayload.build(a.kernel, adt_path, a.cmdline, a.ramdisk)
 
-    phys_base, mem_size = mkadt_vince.PHYS_BASE, mkadt_vince.MEM_SIZE
-    limit = phys_base - LK_RAMDISK_PA
+    phys_base, mem_size = board.PHYS_BASE, board.MEM_SIZE
+    limit = phys_base - lk_ramdisk
     if len(payload) > limit:
         sys.exit(f'payload is {len(payload):#x} bytes, but only {limit:#x} fit between the ramdisk address '
-                 f'{LK_RAMDISK_PA:#x} and the kernel RAM at {phys_base:#x}')
-    open(a.out, 'wb').write(make_boot_img(loader, dtb, payload))
-    print(f"payload   {len(payload):#x} bytes at ramdisk {LK_RAMDISK_PA:#x}..{LK_RAMDISK_PA + len(payload):#x}")
+                 f'{lk_ramdisk:#x} and the kernel RAM at {phys_base:#x}')
+    open(a.out, 'wb').write(make_boot_img(loader, dtb, payload, img_name))
+    print(f"payload   {len(payload):#x} bytes at ramdisk {lk_ramdisk:#x}..{lk_ramdisk + len(payload):#x}")
     print(f"kernel RAM {phys_base:#x}..{phys_base + mem_size:#x}  virt_base {info['virt_base']}  entry {info['entry']}")
     print(f"cmdline   {a.cmdline}")
     print(f"wrote     {a.out} ({os.path.getsize(a.out)} bytes), sha256 {hashlib.sha256(open(a.out, 'rb').read()).hexdigest()}")
