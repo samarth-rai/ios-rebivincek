@@ -1,0 +1,190 @@
+From: rosy port
+Subject: [PATCH] 1014 vince/rosy: the sweet USB device and live console log on the MSM8953 DWC3
+
+bsd/dev/sweet_usb.c (0072-0077) is a DWC3 device driver with a CDC-ECM function and a console log
+over UDP, written for sweet (controller at 0x0a600000) and switched off on topaz and vince. MSM8953
+has the same controller and wrapper at 0x07000000: addresses and clock registers for it, started
+from the eMMC driver, off unless sweetusb=1 (report the state LK left, read only) or sweetusb=2
+(start the device). The log goes to 169.254.255.255:5140 so a host needs no interface setup.
+---
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -39,10 +39,44 @@
+ static void sweet_usb_gadget_start(vm_offset_t dwc);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ 
++#define CBCR_CLK_OFF            (1u << 31)
++
++#if defined(VINCE)
++/*
++ * vince / rosy (MSM8953, SDM450): the same Synopsys DWC3 behind the same Qualcomm wrapper, at
++ * 0x07000000 (stock device tree: ssusb@7000000 "qcom,dwc-usb3-msm", core_base 0x7000000 + 0xfc000,
++ * dwc3@7000000), with a QUSB2 PHY at 0x00079000. Clock and power-domain registers from Linux
++ * gcc-msm8953.c (GCC at 0x01800000): usb30_gdsc 0x3f078, usb30_master 0x3f000, usb30_sleep 0x3f004,
++ * usb30_mock_utmi 0x3f008, pcnoc_usb3_axi 0x3f038, usb_phy_cfg_ahb 0x3f080. The table keeps the
++ * positions the probe relies on: [0] master and [3] the bus clock gate the DWC3 registers, [5] the
++ * PHY's. LK uses this controller for fastboot; whether it leaves it powered and clocked after
++ * `fastboot boot` on these phones is what sweetusb=1 reports. Not run on a phone yet.
++ */
++#define GCC_PA                  0x01800000
++#define GCC_SIZE                0x00080000
++#define GCC_USB30_PRIM_GDSCR    0x3f078         /* bit 31: power on */
++
++static const struct {
++	const char *name;
++	uint32_t    off;
++} usb_cbcr[] = {
++	{ "master", 0x3f000 },
++	{ "sleep", 0x3f004 },
++	{ "utmi", 0x3f008 },
++	{ "pcnoc-usb3-axi", 0x3f038 },
++	{ "usb3-aux", 0x3f044 },
++	{ "phy-cfg-ahb", 0x3f080 },
++	{ "qusb-ref", 0x41030 },
++};
++
++#define DWC3_PA                 0x07000000
++#define DWC3_SIZE               0x0000d000
++#define QUSB2_PA                0x00079000
++#define QUSB2_SIZE              0x00000180
++#else
+ #define GCC_PA                  0x00100000
+ #define GCC_SIZE                0x00090000
+ #define GCC_USB30_PRIM_GDSCR    0x0f004         /* bit 31: power on */
+-#define CBCR_CLK_OFF            (1u << 31)
+ 
+ static const struct {
+ 	const char *name;
+@@ -61,6 +95,7 @@
+ #define DWC3_SIZE               0x0000d000
+ #define QUSB2_PA                0x088e2000
+ #define QUSB2_SIZE              0x00000400
++#endif
+ 
+ static uint32_t
+ usb_rd(vm_offset_t base, uint32_t off)
+@@ -73,7 +108,11 @@
+ void
+ sweet_usb_probe(void)
+ {
++#if defined(VINCE)
++	int enabled = 0;        /* vince / rosy: only when asked for (sweetusb=1 report, sweetusb=2 device) */
++#else
+ 	int enabled = 1;
++#endif
+ 	uint32_t gdscr, cbcr[sizeof(usb_cbcr) / sizeof(usb_cbcr[0])];
+ 	bool clocks_on = true;
+ 
+@@ -124,6 +163,12 @@
+ 	if (phy == 0) {
+ 		return;
+ 	}
++#if defined(VINCE)
++	/* an older QUSB2 PHY with another register layout (Linux phy-msm-qusb.c): raw values only */
++	printf("SWEET USB: QUSB2 +0x80 0x%08x +0x84 0x%08x +0xb4 0x%08x +0x38 0x%08x\n",
++	    usb_rd(phy, 0x80), usb_rd(phy, 0x84), usb_rd(phy, 0xb4), usb_rd(phy, 0x38));
++	return;
++#endif
+ 	/* DT qcom,qusb-phy-reg-offset order (Linux phy-msm-qusb-v2.c): PORT_TUNE1 0x240,
+ 	 * PLL_COMMON_STATUS_ONE 0x1a0, PWR_CTRL1 0x210, INTR_CTRL 0x230,
+ 	 * PLL_CORE_INPUT_OVERRIDE 0x0a8, TEST1 0x254. */
+@@ -164,7 +209,7 @@
+  * session; Linux dwc3-qcom forces that in software when the charger
+  * reports a cable (dwc3_qcom_vbus_override_enable).
+  */
+-#define QSCRATCH_PA             0x0a6f8800
++#define QSCRATCH_PA             (DWC3_PA + 0xf8800)
+ #define QSCRATCH_HS_PHY_CTRL    0x10
+ #define   UTMI_OTG_VBUS_VALID   (1u << 20)
+ #define   SW_SESSVLD_SEL        (1u << 28)
+@@ -593,7 +638,25 @@
+ {
+ }
+ 
+-/* ue0, 192.168.7.2/24 (the host side is 192.168.7.1). */
++/*
++ * ue0, 192.168.7.2/24 (the host side is 192.168.7.1).
++ * vince / rosy: 169.254.7.2/16 instead, and the console log goes to the subnet's broadcast address:
++ * a Mac gives a new USB Ethernet interface a 169.254.x.y address by itself when no DHCP server
++ * answers, so the log can be read there without configuring the interface (which needs root).
++ */
++#if defined(VINCE)
++#define UD_IP_SELF      0xa9fe0702u     /* 169.254.7.2 */
++#define UD_IP_MASK      0xffff0000u
++#define UD_IP_BCAST     0xa9feffffu     /* 169.254.255.255 */
++#define UD_IP_LOGDST    UD_IP_BCAST
++#define UD_IP_TEXT      "169.254.7.2/16"
++#else
++#define UD_IP_SELF      0xc0a80702u     /* 192.168.7.2 */
++#define UD_IP_MASK      0xffffff00u
++#define UD_IP_BCAST     0xc0a807ffu
++#define UD_IP_LOGDST    0xc0a80701u     /* 192.168.7.1 */
++#define UD_IP_TEXT      "192.168.7.2/24"
++#endif
+ static void
+ ud_if_create(void)
+ {
+@@ -652,20 +715,20 @@
+ 		struct sockaddr_in *a = (struct sockaddr_in *)&ifra.ifra_addr;
+ 		a->sin_len = sizeof(*a);
+ 		a->sin_family = AF_INET;
+-		a->sin_addr.s_addr = htonl(0xc0a80702);         /* 192.168.7.2 */
++		a->sin_addr.s_addr = htonl(UD_IP_SELF);
+ 		a = (struct sockaddr_in *)&ifra.ifra_mask;
+ 		a->sin_len = sizeof(*a);
+ 		a->sin_family = AF_INET;
+-		a->sin_addr.s_addr = htonl(0xffffff00);
++		a->sin_addr.s_addr = htonl(UD_IP_MASK);
+ 		a = (struct sockaddr_in *)&ifra.ifra_broadaddr;
+ 		a->sin_len = sizeof(*a);
+ 		a->sin_family = AF_INET;
+-		a->sin_addr.s_addr = htonl(0xc0a807ff);
++		a->sin_addr.s_addr = htonl(UD_IP_BCAST);
+ 		err = sock_ioctl(so, SIOCAIFADDR, &ifra);
+ 		sock_close(so);
+ 	}
+ 	ifnet_set_flags(ud.ifp, IFF_UP | IFF_RUNNING, IFF_UP | IFF_RUNNING);
+-	printf("SWEET USB: ue0 192.168.7.2/24 %s (err %d)\n", err ? "NOT configured" : "up", err);
++	printf("SWEET USB: ue0 " UD_IP_TEXT " %s (err %d)\n", err ? "NOT configured" : "up", err);
+ }
+ 
+ static void
+@@ -787,15 +850,20 @@
+ 	to.sin_len = sizeof(to);
+ 	to.sin_family = AF_INET;
+ 	to.sin_port = htons(5140);
+-	to.sin_addr.s_addr = htonl(0xc0a80701);         /* 192.168.7.1 */
++	to.sin_addr.s_addr = htonl(UD_IP_LOGDST);
+ 	for (;;) {
+ 		ud_sleep_ms(100);
+ 		if (!ud.configured) {
+ 			continue;
+ 		}
+-		if (so == NULL && sock_socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, NULL, &so) != 0) {
+-			so = NULL;
+-			continue;
++		if (so == NULL) {
++			int one = 1;
++			if (sock_socket(PF_INET, SOCK_DGRAM, IPPROTO_UDP, NULL, NULL, &so) != 0) {
++				so = NULL;
++				continue;
++			}
++			/* the vince / rosy destination is a broadcast address */
++			(void)sock_setsockopt(so, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
+ 		}
+ 		uint32_t n;
+ 		while ((n = sweet_log_copy(&pos, chunk, sizeof(chunk))) > 0) {
+--- a/bsd/dev/vince_emmc.c
++++ b/bsd/dev/vince_emmc.c
+@@ -1038,6 +1038,11 @@
+ 	/* the process sampler (patch 0054) is started by the UFS driver on sweet; here by the eMMC one */
+ 	sweet_sample_start();
+ 	vince_input_start();    /* keys and touch (patch 0976); vincekeys=0 / vincetouch=0 turn them off */
++	{
++		/* USB device and live console log (bsd/dev/sweet_usb.c); off unless sweetusb=1 or 2 */
++		extern void sweet_usb_probe(void);
++		sweet_usb_probe();
++	}
+ 	return 0;
+ }
+ 

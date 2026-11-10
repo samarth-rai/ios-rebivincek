@@ -1,0 +1,18 @@
+From: rosy port
+Subject: [PATCH] 1015 rosy: the process sampler also samples lsd by default
+---
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -93,7 +93,12 @@
+ {
+ 	static int chan;
+ 	if (!PE_parse_boot_argn("sweetsample", sweet_sample_names, sizeof(sweet_sample_names))) {
++#if defined(ROSY)
++		/* rosy: SpringBoard waited on lsd (LaunchServices reseeding its database) for minutes: sample it too */
++		strlcpy(sweet_sample_names, "SpringBoard,backboardd,lsd", sizeof(sweet_sample_names));
++#else
+ 		strlcpy(sweet_sample_names, "SpringBoard,backboardd", sizeof(sweet_sample_names));
++#endif
+ 	}
+ 	if (sweet_sample_names[0] == '-') {
+ 		return;
