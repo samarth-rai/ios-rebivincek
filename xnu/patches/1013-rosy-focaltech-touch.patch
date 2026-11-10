@@ -1,0 +1,163 @@
+From: rosy port
+Subject: [PATCH] 1013 rosy: FocalTech touch (FT8613 / FT8006M) on the vince I2C path
+
+vince_input.c talks to a Synaptics RMI4 controller at 0x20. rosy has a FocalTech controller at 0x38
+(0x39 on the BOE panel) on the same QUP3 bus and the same reset and interrupt pins. The QUP I2C
+code, pins and clock setup are reused; only the report format differs. vincetouch=1 picks the
+phone's controller, 2 forces FocalTech, 3 Synaptics, 0 is off.
+---
+--- a/bsd/dev/vince_input.c
++++ b/bsd/dev/vince_input.c
+@@ -108,6 +108,7 @@
+ static vm_offset_t spmi_core, spmi_cnfg, spmi_obs, tlmm, gcc, qup;
+ static uint32_t qup_in_fifo, qup_out_fifo, qup_clk_ctl = CLK_CTL_400K;
+ static int rmi_page = -1;
++static uint32_t touch_i2c_addr = RMI_ADDR;      /* 7-bit address of the touch controller */
+ static bool input_started;
+ static int keys_chan, touch_chan;
+ 
+@@ -242,7 +243,7 @@
+ static int
+ qup_msg(int rd, const uint8_t *tx, uint8_t *rx, uint32_t n)
+ {
+-	uint32_t addr8 = (RMI_ADDR << 1) | (rd ? 1u : 0u);
++	uint32_t addr8 = (touch_i2c_addr << 1) | (rd ? 1u : 0u);
+ 	uint32_t ntx = rd ? 2 : n + 1;
+ 	uint32_t cfg = CFG_I2C, got = 0;
+ 	int r;
+@@ -422,7 +423,111 @@
+ 	}
+ }
+ 
++/*
++ * rosy (Redmi 5): FocalTech touch, part of the panel's FT8613 (or FT8006M) display driver, on the same
++ * bus and pins as vince's Synaptics: I2C address 0x38 (0x39 on the BOE panel), from the phone's device
++ * tree (focaltech@38 on i2c@78b7000, reset GPIO 64, interrupt GPIO 65, 720 x 1440, 10 touches).
++ * The usual FocalTech report: register 0x02 = number of points, then 6 bytes a point from 0x03:
++ *   [0] event (bits 7:6: 0 down, 1 up, 2 contact, 3 none) and X bits 11:8   [1] X bits 7:0
++ *   [2] slot (bits 7:4, 0xf = unused) and Y bits 11:8                         [3] Y bits 7:0
++ * Coordinates are panel pixels. The reset line is only released (touch_hw_init), never pulsed: the
++ * controller sits in the display driver, and the panel must stay as the bootloader left it.
++ * Nothing is written to the controller except the register number of each read.
++ */
++static int
++ft_read(uint8_t reg, uint8_t *buf, uint32_t n)
++{
++	int r = qup_msg(0, &reg, NULL, 1);
++	if (!r) {
++		r = qup_msg(1, NULL, buf, n);
++	}
++	return r;
++}
++
+ static void
++focaltech_run(void)
++{
++	static const uint8_t addrs[2] = {0x38, 0x39};
++	uint8_t id1 = 0, id2 = 0, fw = 0, d[1 + 6 * VINCE_TOUCH_FINGERS];
++	unsigned errors = 0, idle = 0, frames = 0;
++	int r = -1;
++
++	in_sleep(&touch_chan, 300);     /* the controller's firmware starts after the reset line goes high */
++	for (int pass = 0; pass < 2 && r; pass++) {
++		for (unsigned i = 0; i < 2 && r; i++) {
++			touch_i2c_addr = addrs[i];
++			r = ft_read(0xa3, &id1, 1);
++			printf("VINCE INPUT: FocalTech probe %#x at %s: %d\n", touch_i2c_addr,
++			    qup_clk_ctl == CLK_CTL_400K ? "400 kHz" : "100 kHz", r);
++		}
++		if (r) {
++			qup_clk_ctl = CLK_CTL_100K;
++		}
++	}
++	if (r) {
++		printf("VINCE INPUT: no FocalTech controller at 0x38 or 0x39 (i2c %#x qup %#x); touch off\n",
++		    in_rd(qup, QUP_I2C_STATUS), in_rd(qup, QUP_ERROR_FLAGS));
++		return;
++	}
++	(void)ft_read(0x9f, &id2, 1);
++	(void)ft_read(0xa6, &fw, 1);
++	printf("VINCE INPUT: FocalTech at %#x, chip id %02x:%02x, firmware %#x; touch on, %d fingers, %d x %d\n",
++	    touch_i2c_addr, id1, id2, fw, VINCE_TOUCH_FINGERS, VINCE_PANEL_W, VINCE_PANEL_H);
++
++	for (;;) {
++		/* the interrupt line (low) says a report is waiting; check anyway every ~100 ms */
++		if ((in_rd(tlmm, GPIO_IO(GPIO_ATTN)) & 1u) && ++idle < 12) {
++			in_sleep(&touch_chan, TOUCH_POLL_MS);
++			continue;
++		}
++		idle = 0;
++		r = ft_read(0x02, d, sizeof(d));
++		if (!r) {
++			unsigned n = d[0] & 15u;
++			uint32_t mask = 0;
++			int x[VINCE_TOUCH_FINGERS] = {0}, y[VINCE_TOUCH_FINGERS] = {0};
++
++			/* 0 points, or the all-ones frame some firmware sends with no contact: everything is up */
++			if (n != 0 && n <= 10) {
++				for (int i = 0; i < VINCE_TOUCH_FINGERS; i++) {
++					const uint8_t *p = d + 1 + 6 * i;
++					unsigned slot = p[2] >> 4, event = p[0] >> 6;
++					int px = ((p[0] & 15) << 8) | p[1], py = ((p[2] & 15) << 8) | p[3];
++
++					if (slot >= VINCE_TOUCH_FINGERS || event == 1u || event == 3u) {
++						continue;
++					}
++					mask |= 1u << slot;
++					x[slot] = px >= VINCE_PANEL_W ? VINCE_PANEL_W - 1 : px;
++					y[slot] = py >= VINCE_PANEL_H ? VINCE_PANEL_H - 1 : py;
++				}
++			}
++			if (mask != 0 && frames < 8) {
++				frames++;
++				printf("VINCE INPUT: FocalTech frame n=%u raw %02x %02x %02x %02x %02x %02x -> slot mask %#x x %d y %d\n",
++				    n, d[1], d[2], d[3], d[4], d[5], d[6], mask, x[0], y[0]);
++			}
++			for (int i = 0; i < VINCE_TOUCH_FINGERS; i++) {
++				sweet_hid_touch(i, (mask >> i) & 1u, x[i], y[i]);
++			}
++			errors = 0;
++		} else {
++			if ((errors++ % 100u) == 0) {
++				printf("VINCE INPUT: FocalTech read error %d (i2c %#x qup %#x)\n", r,
++				    in_rd(qup, QUP_I2C_STATUS), in_rd(qup, QUP_ERROR_FLAGS));
++			}
++			if (errors == 5) {
++				touch_release_all();
++			}
++		}
++		in_sleep(&touch_chan, TOUCH_POLL_MS);
++	}
++}
++
++/* boot-arg vincetouch: 0 off, 1 this phone's controller (rosy: FocalTech, vince: Synaptics), 2 FocalTech, 3 Synaptics */
++static int touch_kind = 1;
++
++static void
+ touch_thread(void *arg, wait_result_t result)
+ {
+ 	uint16_t f01_data = 0, f12_data = 0;
+@@ -434,6 +539,15 @@
+ 	if (!touch_hw_init()) {
+ 		goto out;
+ 	}
++#if defined(ROSY)
++	if (touch_kind == 1) {
++		touch_kind = 2;
++	}
++#endif
++	if (touch_kind == 2) {
++		focaltech_run();        /* comes back only when no controller answers */
++		goto out;
++	}
+ 	/* Page 0 PDT, top down; interrupt bits are given out in this order. */
+ 	for (int a = 0xe9; a >= 0x0a; a -= 6) {
+ 		uint8_t e[6];
+@@ -517,6 +631,7 @@
+ 	vince_adreno_init();
+ 	(void)PE_parse_boot_argn("vincekeys", &keys, sizeof(keys));
+ 	(void)PE_parse_boot_argn("vincetouch", &touch, sizeof(touch));
++	touch_kind = touch;
+ 	tlmm = ml_io_map(TLMM_PA, TLMM_SIZE);
+ 	if (!tlmm) {
+ 		printf("VINCE INPUT: TLMM mapping failed\n");

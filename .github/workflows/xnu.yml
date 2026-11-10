@@ -140,6 +140,8 @@ jobs:
           if grep -q sweet_res_wanted dxb/xnu/iokit/Kernel/arm/SweetSurface.cpp; then echo "ok   SweetSurface.cpp (1011 surface reserve)"; else echo "MISSING patch 1011 in SweetSurface.cpp"; missing=1; fi
           # 1012: early page tables sized for both RAM banks (a patch with context: check it applied)
           if grep -q 'avail_end - gPhysBase) + 0x0FFFFFFF' dxb/xnu/osfmk/arm64/arm_vm_init.c; then echo "ok   arm_vm_init.c (1012 early tables)"; else echo "MISSING patch 1012 in arm_vm_init.c"; missing=1; fi
+          # 1013: FocalTech touch for rosy (a patch with context: check it applied)
+          if grep -q focaltech_run dxb/xnu/bsd/dev/vince_input.c; then echo "ok   vince_input.c (1013 FocalTech touch)"; else echo "MISSING patch 1013 in vince_input.c"; missing=1; fi
           echo "board: ROSY=$ROSY"
           [ -z "${missing:-}" ]
 
