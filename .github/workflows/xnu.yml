@@ -138,6 +138,8 @@ jobs:
           fi
           # 1011: screen-sized surface buffers set aside without the GPU (a patch with context: check it applied)
           if grep -q sweet_res_wanted dxb/xnu/iokit/Kernel/arm/SweetSurface.cpp; then echo "ok   SweetSurface.cpp (1011 surface reserve)"; else echo "MISSING patch 1011 in SweetSurface.cpp"; missing=1; fi
+          # 1012: early page tables sized for both RAM banks (a patch with context: check it applied)
+          if grep -q 'avail_end - gPhysBase) + 0x0FFFFFFF' dxb/xnu/osfmk/arm64/arm_vm_init.c; then echo "ok   arm_vm_init.c (1012 early tables)"; else echo "MISSING patch 1012 in arm_vm_init.c"; missing=1; fi
           echo "board: ROSY=$ROSY"
           [ -z "${missing:-}" ]
 

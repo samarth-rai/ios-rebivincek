@@ -1,0 +1,28 @@
+From: rosy port
+Subject: [PATCH] 1012 vinceram3g: early page tables sized for the whole span
+
+rosy with vinceram3g=1 stopped right after the version line: pmap_startup -> pmap_steal_memory ->
+pmap_enter -> pmap_expand -> pmap_pages_alloc_zeroed -> vm_page_grab, for ever (seen in QEMU with the
+rosy kernel). The L3 tables made for early allocations are sized from bank 1 only.
+---
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -2421,6 +2421,18 @@
+ 	 */
+ 
+ 	mem_segments = (mem_size + 0x0FFFFFFF) >> 28;
++#if defined(VINCE)
++	/*
++	 * With the second bank (vinceram3g) what is stolen before the VM runs grows with the whole span, not
++	 * with bank 1: vm_pages[] has an entry for every page from the first to the last, the hole included.
++	 * On rosy (bank 1 = 700 MiB: 3 segments, 32 MB of tables) the 36 MB array alone ran past these
++	 * tables; pmap_expand() then asked vm_page_grab() for a table page and waited for ever, right after
++	 * the version line. (vince's 1340 MiB bank 1 gave 64 MB, enough for its 44 MB.)
++	 */
++	if (vince_bank2_size != 0) {
++		mem_segments = ((uint64_t)(avail_end - gPhysBase) + 0x0FFFFFFF) >> 28;
++	}
++#endif
+ 
+ 	va_l1 = dynamic_memory_begin;
+ 	va_l1_end = va_l1 + ((2 + (mem_segments * 10)) << 20);
