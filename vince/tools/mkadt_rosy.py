@@ -22,7 +22,7 @@ sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, '..', '..', 'tools'))
 import adt  # noqa: E402
 import mkadt_vince as base  # noqa: E402
-from mkadt import cstr  # noqa: E402
+from mkadt import cstr, node, u32  # noqa: E402
 
 PHYS_BASE = 0x50000000
 MEM_SIZE = 0x30000000	# 768 MiB: 0x50000000 - 0x7fffffff
@@ -41,6 +41,8 @@ def set_layout(name):
 FB_W, FB_H, FB_STRIDE = 720, 1440, 2160
 FB, FB_SIZE = 0x90001000, 0x2f8000	# 720 * 1440 * 3 bytes, rounded up to 4 KiB
 SWEET_ECID = 0x524f535900000001	# 'ROSY' + 1, synthetic
+# What iOS draws: the iPhone X layout (SWEET_FB_LOGICAL_W/H of SweetFramebuffer.cpp), scaled to the panel
+CANVAS_W, CANVAS_H = 1125, 2436
 # Where LK is expected to put the ramdisk (DDR base 0x40000000 + 0x3600000); the packer checks that
 # the payload ends below PHYS_BASE.
 LK_RAMDISK_PA = 0x43600000
@@ -61,6 +63,19 @@ def build(seed=None):
             cstr('qcom,sdm450') + cstr('qcom,msm8953') + cstr('AppleARM'))
     root.props = [(k, f, comp if k == 'compatible' else v) for k, f, v in root.props]
     for c in root.children:
+        if c.name == 'arm-io' and not any(k.name == 'disp0' for k in c.children):
+            # Main display. IOMobileFramebuffer.framework counts the /arm-io children with this device_type
+            # (none: CoreAnimation finds no main display and SpringBoard stops), reads the canvas size from
+            # the node, and the kernel's AppleCLCD (SweetFramebuffer.cpp, patch 0968 for this panel) matches
+            # the compatible string. The canvas is the iPhone X layout; the kernel scales it to the panel.
+            # mkadt_vince.py has no such node (it predates 0968); tools/mkadt.py is where this comes from.
+            c.children.append(node('disp0', [
+                ('AAPL,phandle', u32(900)),
+                ('device_type', cstr('display-subsystem')),
+                ('compatible', cstr('sweet,display')),
+                ('canvas-width', u32(CANVAS_W)),
+                ('canvas-height', u32(CANVAS_H)),
+            ]))
         if c.name == 'chosen':
             c.props = [(k, f, cstr('rosy-loader') if k in ('firmware-version', 'system-firmware-version') else v)
                        for k, f, v in c.props]
