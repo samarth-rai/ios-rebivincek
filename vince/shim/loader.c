@@ -279,6 +279,19 @@ void loader_main(uint64_t dtb, uint64_t img)
 
 	uintptr_t entry_pa = p->entry_va + pa_of_va_base;
 	ps("JUMP "); px(entry_pa, 9); ps(" (xnu clears the screen)"); pe(GREEN);
+#if defined(LOADER_PAUSE_S) && !defined(HOST)
+	/*
+	 * Diagnostic build only: keep the loader's lines on screen for LOADER_PAUSE_S seconds (generic
+	 * timer; the iteration cap ends the wait if the counter does not run).
+	 */
+	{
+		uint64_t f = rsr("cntfrq_el0");
+		uint64_t end = rsr("cntvct_el0") + (f ? f : 19200000ULL) * LOADER_PAUSE_S;
+		ps("(pause before the jump)"); pe(YELLOW);
+		for (volatile uint64_t n = 0; n < 4000000000ULL && rsr("cntvct_el0") < end; n++)
+			;
+	}
+#endif
 
 	/* Quiet the timers LK may have left running, then drop stale I-cache lines (everything was written MMU/caches off). */
 #ifdef HOST

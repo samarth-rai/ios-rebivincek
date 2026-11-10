@@ -13,6 +13,8 @@ vince) DEF= ;;
 *) echo "unknown board $BOARD"; exit 1 ;;
 esac
 for d in /opt/homebrew/opt/lld/bin /opt/homebrew/opt/llvm/bin; do [ -d "$d" ] && PATH="$PATH:$d"; done
+# LOADER_PAUSE_S=N: diagnostic loader that keeps its own lines on screen N seconds before the jump
+[ -n "${LOADER_PAUSE_S:-}" ] && DEF="$DEF -DLOADER_PAUSE_S=${LOADER_PAUSE_S}ULL"
 mkdir -p "$OUT/shim" "$OUT/fakexnu"
 CFLAGS="--target=aarch64-none-elf -O2 -Wall -Wextra -ffreestanding -nostdlib -fno-pic -fno-pie \
  -mgeneral-regs-only -mstrict-align -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables \
