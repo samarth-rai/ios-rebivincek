@@ -10,7 +10,7 @@ diff --git a/osfmk/arm64/vince_reset.c b/osfmk/arm64/vince_reset.c
 new file mode 100644
 --- /dev/null
 +++ b/osfmk/arm64/vince_reset.c
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,167 @@
 +/*
 + * vince / rosy: ways for the kernel to give the phone back. These are unibody phones; a kernel that
 + * waits for ever, or stops in a panic, otherwise runs until the battery is unplugged.
@@ -42,6 +42,7 @@ new file mode 100644
 +#include <kern/sched_prim.h>
 +#include <kern/misc_protos.h>
 +#include <pexpert/pexpert.h>
++#include <IOKit/IOPlatformExpert.h>     /* kPEHaltCPU, kPERestartCPU, kPEPanicRestartCPU, PE_halt_restart */
 +#include <machine/machine_routines.h>
 +
 +extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
