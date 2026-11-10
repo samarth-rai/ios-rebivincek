@@ -375,11 +375,12 @@ diff --git a/osfmk/conf/files.arm64 b/osfmk/conf/files.arm64
 index b0dad49..c793cb1 100644
 --- a/osfmk/conf/files.arm64
 +++ b/osfmk/conf/files.arm64
-@@ -41,6 +41,7 @@ osfmk/arm/arm_timer.c		standard
+@@ -41,6 +41,8 @@ osfmk/arm/arm_timer.c		standard
  osfmk/arm/arm_init.c	optional config_pmap_ppl
  osfmk/arm64/arm_vm_init.c	optional config_pmap_ppl
  osfmk/arm64/sweet_early.c	standard
 +osfmk/arm64/vince_diag.c	standard
++osfmk/arm64/vince_reset.c	standard
  osfmk/arm64/arm64_hypercall.c	standard
  osfmk/arm/io_map.c		standard
  osfmk/arm64/loose_ends.c	standard
@@ -416,13 +417,15 @@ diff --git a/pexpert/arm/pe_init.c b/pexpert/arm/pe_init.c
 index 04dda53..1eabe5b 100644
 --- a/pexpert/arm/pe_init.c
 +++ b/pexpert/arm/pe_init.c
-@@ -379,6 +379,12 @@ PE_lockdown_iokit(void)
+@@ -379,6 +379,14 @@ PE_lockdown_iokit(void)
  	 * hardware protections.
  	 */
  	zalloc_iokit_lockdown();
 +#if defined(VINCE)
 +	{
 +		extern void vince_diag_start(void);
++		extern void vince_reset_start(void);    /* osfmk/arm64/vince_reset.c (patch 1010) */
++		vince_reset_start();
 +		vince_diag_start();
 +	}
 +#endif

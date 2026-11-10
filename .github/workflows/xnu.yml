@@ -129,6 +129,13 @@ jobs:
           for f in makedefs/MakeInc.def osfmk/arm64/start.s osfmk/arm64/sweet_early.c iokit/Kernel/arm/SweetFramebuffer.cpp iokit/Kernel/arm/hid/SweetHID.cpp; do
             if grep -q VINCE_PANEL_W "dxb/xnu/$f" || grep -q VINCE_PANEL_STRIDE "dxb/xnu/$f"; then echo "ok   $f (panel size)"; else echo "MISSING panel-size change in $f"; missing=1; fi
           done
+          # reset paths (1010 adds the file, 0963 builds and starts it): without them a stopped kernel
+          # can only be ended by unplugging the battery
+          if [ -f dxb/xnu/osfmk/arm64/vince_reset.c ] && grep -q vince_reset dxb/xnu/osfmk/conf/files.arm64 && grep -q vince_reset_start dxb/xnu/pexpert/arm/pe_init.c; then
+            echo "ok   vince_reset.c (built and started)"
+          else
+            echo "MISSING reset patch (1010 / 0963)"; missing=1
+          fi
           echo "board: ROSY=$ROSY"
           [ -z "${missing:-}" ]
 

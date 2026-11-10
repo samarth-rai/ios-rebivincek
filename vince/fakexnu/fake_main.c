@@ -6,6 +6,7 @@
 #include <stdint.h>
 #include "console.h"
 #include "../shim/board.h"	/* FB_BASE, PANEL_* */
+#include "../shim/reset.h"	/* automatic reset of the final screen */
 
 #define WHITE	0xffffffffU
 #define YELLOW	0xffffff00U
@@ -43,8 +44,7 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 	ps("FAKE XNU EXCEPTION slot="); px(slot, 2); pe(MAGENTA);
 	ps("ESR="); px(rsr("esr_el1"), 8); ps(" FAR="); px(rsr("far_el1"), 16); pe(MAGENTA);
 	ps("ELR="); px(rsr("elr_el1"), 16); ps(" X0="); px(regs[0], 16); pe(MAGENTA);
-	for (;;)
-		__asm__ volatile("wfe");
+	board_halt(HALT_RESET_S);
 }
 
 static uint32_t le32(const uint8_t *p) { return p[0] | p[1] << 8 | p[2] << 16 | (uint32_t)p[3] << 24; }
@@ -102,6 +102,5 @@ void fake_main(uint64_t ba_pa, uint64_t head)
 	}
 	if (bad) { ps("LOADER TEST FAILED"); pe(RED); }
 	else { ps("LOADER TEST PASSED"); pe(GREEN); }
-	for (;;)
-		__asm__ volatile("wfe");
+	board_halt(HALT_RESET_S);
 }

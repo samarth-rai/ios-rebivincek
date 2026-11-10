@@ -9,15 +9,15 @@ CFLAGS="--target=aarch64-none-elf -O2 -Wall -Wextra -ffreestanding -nostdlib -fn
  -mgeneral-regs-only -mstrict-align -fno-stack-protector -fno-builtin -fno-asynchronous-unwind-tables \
  -fno-jump-tables"
 clang $CFLAGS -c start.S -o "$OUT/start.o"
-for f in loader console fdt; do
+for f in loader console fdt reset; do
 	clang $CFLAGS -c $f.c -o "$OUT/$f.o"
 done
-ld.lld -T link.ld -N --no-rosegment -o "$OUT/loader.elf" "$OUT"/start.o "$OUT"/loader.o "$OUT"/console.o "$OUT"/fdt.o
+ld.lld -T link.ld -N --no-rosegment -o "$OUT/loader.elf" "$OUT"/start.o "$OUT"/loader.o "$OUT"/console.o "$OUT"/fdt.o "$OUT"/reset.o
 llvm-objcopy -O binary "$OUT/loader.elf" "$OUT/loader.Image"
 end=$(llvm-readelf -s "$OUT/loader.elf" | awk '$8=="_end"{print "0x"$2}')
 truncate -s "$((end))" "$OUT/loader.Image"
 # position independence: the only absolute relocation allowed is the Image header's image_size
-n=$(llvm-readelf -r "$OUT"/start.o "$OUT"/loader.o "$OUT"/console.o "$OUT"/fdt.o | grep -c 'R_AARCH64_ABS' || true)
+n=$(llvm-readelf -r "$OUT"/start.o "$OUT"/loader.o "$OUT"/console.o "$OUT"/fdt.o "$OUT"/reset.o | grep -c 'R_AARCH64_ABS' || true)
 [ "$n" = 1 ] || { echo "FAIL: $n absolute relocations (expected exactly 1: image_size)"; exit 1; }
 if llvm-readelf -r "$OUT/loader.elf" | grep -qE 'R_AARCH64'; then echo "FAIL: runtime relocations left"; exit 1; fi
 python3 -I - "$OUT/loader.Image" <<'PYEOF'

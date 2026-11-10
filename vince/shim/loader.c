@@ -14,6 +14,7 @@
 #include "console.h"
 #include "fdt.h"
 #include "board.h"	/* FB_BASE, PANEL_*, RAM_LO/HI, LK_RAMDISK_FALLBACK */
+#include "reset.h"	/* Power-key reset, automatic reset of a stopped loader */
 
 
 #define WHITE	0xffffffffU
@@ -99,7 +100,7 @@ extern void host_jump(uint64_t entry_pa, uint64_t ba_pa);
 #define cpu_halt() host_halt()
 #else
 #define rsr(name) ({ uint64_t _v; __asm__ volatile("mrs %0, " name : "=r"(_v)); _v; })
-#define cpu_halt() __asm__ volatile("wfe")
+#define cpu_halt() board_halt(HALT_RESET_S)	/* never just stop: the phone has no reset button */
 #endif
 
 void exc_handler(uint64_t slot, uint64_t *regs)
@@ -185,6 +186,10 @@ void loader_main(uint64_t dtb, uint64_t img)
 	ps("img="); px(img, 9); ps(" dtb="); px(dtb, 9);
 	ps(" EL="); px((rsr("currentel") >> 2) & 3, 1);
 	ps(" MPIDR="); px(rsr("mpidr_el1") & 0xffffff, 6); pe(WHITE);
+
+	/* First of all make a long press of Power a hard reset; from here on the PMIC does that by itself. */
+	stage = "reset setup";
+	board_reset_prepare();
 
 	stage = "find ramdisk";
 	if (!fdt_chosen_addr((const uint8_t *)dtb, "linux,initrd-start", &rd_start) ||

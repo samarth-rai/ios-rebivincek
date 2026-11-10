@@ -1,0 +1,179 @@
+From: rosy port
+Subject: [PATCH] 1010 vince/rosy: reset the phone from the kernel (PS_HOLD), time limit, optional watchdog
+
+A kernel that waits for ever or stops in a panic keeps a unibody phone running until its battery is
+unplugged. New osfmk/arm64/vince_reset.c: vincereboot=N (rosy: 300 s by default), PE_halt_restart for
+reboot/halt/panic restart, opt-in vincewdt=N. It is added to the build and started by patch 0963
+(osfmk/conf/files.arm64, pexpert/arm/pe_init.c). No PMIC or storage writes.
+---
+diff --git a/osfmk/arm64/vince_reset.c b/osfmk/arm64/vince_reset.c
+new file mode 100644
+--- /dev/null
++++ b/osfmk/arm64/vince_reset.c
+@@ -0,0 +1,166 @@
++/*
++ * vince / rosy: ways for the kernel to give the phone back. These are unibody phones; a kernel that
++ * waits for ever, or stops in a panic, otherwise runs until the battery is unplugged.
++ *
++ *   vincereboot=N   reset N seconds after this file's thread starts (rosy: 300 by default, vince: off;
++ *                   0 turns it off). A warning line is printed 10 s before.
++ *   reboot/halt     PE_halt_restart is set, so reboot(2), halt and a panic that is allowed to restart
++ *                   (no DB_NMI bit, 0x4, in debug=) end in a reset. A panic stays on screen 60 s first.
++ *   vincewdt=N      opt-in: arm the apps watchdog (qcom,msm-watchdog at 0x0b017000) with a bark at N
++ *                   seconds (1..30) and a bite one second later; this file's thread pets it. A panic
++ *                   or a hard stall then ends in a watchdog reset. Off by default: what the boot ROM
++ *                   does after a bite has not been seen on these phones.
++ *
++ * The reset itself is the SoC's PS_HOLD line (restart@4ab000 "qcom,pshold" in the stock device tree),
++ * what Linux and LK use to reboot this SoC. The loader (vince/shim/reset.c) has set the PMIC to answer
++ * it with a hard reset and to hard-reset on a long press of Power; nothing here writes to the PMIC or
++ * to storage.
++ */
++#include <pexpert/arm64/board_config.h>
++
++#if defined(VINCE)
++
++#include <stdint.h>
++#include <mach/mach_types.h>
++#include <mach/mach_time.h>
++#include <kern/kern_types.h>
++#include <kern/thread.h>
++#include <kern/clock.h>
++#include <kern/sched_prim.h>
++#include <kern/misc_protos.h>
++#include <pexpert/pexpert.h>
++#include <machine/machine_routines.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern void delay(int usec);
++extern int (*PE_halt_restart)(unsigned int type);
++
++void vince_reset_now(const char *why);
++void vince_reset_start(void);
++
++#define VR_PS_HOLD_PA   0x004ab000u
++#define VR_WDT_PA       0x0b017000u
++#define VR_WDT_RST      0x04u
++#define VR_WDT_EN       0x08u
++#define VR_WDT_BARK     0x10u
++#define VR_WDT_BITE     0x14u
++#define VR_WDT_HZ       32765u
++#define VR_PANIC_SHOW_S 60
++
++#if defined(ROSY)
++#define VR_DEFAULT_LIMIT_S 300u
++#else
++#define VR_DEFAULT_LIMIT_S 0u
++#endif
++
++static vm_offset_t vr_ps_hold, vr_wdt;
++static uint32_t vr_limit_s = VR_DEFAULT_LIMIT_S;
++static uint32_t vr_wdt_s;
++
++static inline void
++vr_write(vm_offset_t addr, uint32_t val)
++{
++	*(volatile uint32_t *)addr = val;
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++/* Does not return if the reset works. Usable with interrupts off (delay() spins on the timebase). */
++void
++vince_reset_now(const char *why)
++{
++	printf("VINCE RESET: %s\n", why);
++	if (vr_ps_hold) {
++		vr_write(vr_ps_hold, 0);
++		delay(3 * 1000 * 1000);
++		printf("VINCE RESET: PS_HOLD did not reset the phone\n");
++	}
++	if (vr_wdt) {
++		printf("VINCE RESET: watchdog bite\n");
++		vr_write(vr_wdt + VR_WDT_EN, 1);
++		vr_write(vr_wdt + VR_WDT_BITE, 1);
++		vr_write(vr_wdt + VR_WDT_RST, 1);
++		delay(5 * 1000 * 1000);
++	}
++	printf("VINCE RESET: no reset worked, hold Power about 7 s\n");
++}
++
++static int
++vr_halt_restart(unsigned int type)
++{
++	/* PEHaltRestart also passes notifications (panic begin/end, paging off): only these end the system */
++	if (type == kPEPanicRestartCPU) {
++		printf("VINCE RESET: panic, reset in %d s\n", VR_PANIC_SHOW_S);
++		for (int i = 0; i < VR_PANIC_SHOW_S; i++) {
++			delay(1000 * 1000);
++		}
++		vince_reset_now("panic");
++	} else if (type == kPERestartCPU || type == kPEHaltCPU) {
++		vince_reset_now(type == kPEHaltCPU ? "halt" : "restart");
++	}
++	return 0;
++}
++
++static void
++vr_thread(void *param __unused, wait_result_t wr __unused)
++{
++	uint64_t t0 = mach_absolute_time();
++	boolean_t warned = FALSE;
++
++	for (;;) {
++		uint64_t ns;
++		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++		uint32_t s = (uint32_t)(ns / NSEC_PER_SEC);
++
++		if (PE_halt_restart != vr_halt_restart) {
++			PE_halt_restart = vr_halt_restart;     /* nobody else resets this phone */
++		}
++		if (vr_wdt_s != 0 && vr_wdt) {
++			vr_write(vr_wdt + VR_WDT_RST, 1);       /* pet */
++		}
++		if (vr_limit_s != 0) {
++			if (!warned && s + 10 >= vr_limit_s) {
++				warned = TRUE;
++				printf("VINCE RESET: automatic reset in 10 s (vincereboot=0 turns it off)\n");
++			}
++			if (s >= vr_limit_s) {
++				vince_reset_now("time limit (vincereboot)");
++				vr_limit_s = 0;
++			}
++		}
++		/* like the diagnostics thread: never sleeps, so it needs no timer interrupt */
++		thread_yield_internal(1);
++	}
++}
++
++void
++vince_reset_start(void)
++{
++	thread_t th;
++
++	(void)PE_parse_boot_argn("vincereboot", &vr_limit_s, sizeof(vr_limit_s));
++	(void)PE_parse_boot_argn("vincewdt", &vr_wdt_s, sizeof(vr_wdt_s));
++	if (vr_wdt_s > 30) {
++		vr_wdt_s = 30;
++	}
++	vr_ps_hold = ml_io_map(VR_PS_HOLD_PA, 0x1000);
++	vr_wdt = ml_io_map(VR_WDT_PA, 0x1000);
++	PE_halt_restart = vr_halt_restart;
++	printf("VINCE RESET: PS_HOLD %s, time limit %u s, watchdog %u s; hold Power about 7 s for a hard reset\n",
++	    vr_ps_hold ? "mapped" : "NOT MAPPED", vr_limit_s, vr_wdt_s);
++	if (vr_wdt_s != 0 && vr_wdt) {
++		vr_write(vr_wdt + VR_WDT_BARK, vr_wdt_s * VR_WDT_HZ);
++		vr_write(vr_wdt + VR_WDT_BITE, (vr_wdt_s + 1) * VR_WDT_HZ);
++		vr_write(vr_wdt + VR_WDT_EN, 1);
++		vr_write(vr_wdt + VR_WDT_RST, 1);
++	}
++	if (kernel_thread_start(vr_thread, NULL, &th) == KERN_SUCCESS) {
++		thread_deallocate(th);
++	} else {
++		printf("VINCE RESET: no thread: no time limit, no watchdog petting\n");
++		if (vr_wdt_s != 0 && vr_wdt) {
++			vr_write(vr_wdt + VR_WDT_EN, 0);
++		}
++	}
++}
++
++#endif /* VINCE */
