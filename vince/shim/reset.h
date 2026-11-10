@@ -19,12 +19,15 @@
 #ifndef HOST
 /* Program the Power-key and PS_HOLD resets; prints the registers before and after on the console. */
 void board_reset_prepare(void);
+/* Ask LK to stop in fastboot after the next reset, whatever causes it (volatile; LK clears the request). */
+void board_reset_to_fastboot(void);
 /* Count down `seconds` on the console, then reset (0: no countdown, stop for good). */
 void board_halt(unsigned seconds) __attribute__((noreturn));
 /* Reset the phone now. */
 void board_reset_now(void) __attribute__((noreturn));
 #else
 static inline void board_reset_prepare(void) {}
+static inline void board_reset_to_fastboot(void) {}
 #endif
 
 /* Seconds a final screen (test result, failure, exception) stays up before the automatic reset. */

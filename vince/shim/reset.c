@@ -45,6 +45,11 @@
 #define PON_KPDPWR_S2_CNTL2	0x43	/* bit 7: enable */
 #define PON_PS_HOLD_RESET_CTL	0x5a	/* bits 3:0: reset type */
 #define PON_PS_HOLD_RESET_CTL2	0x5b	/* bit 7: enable */
+#define PON_SOFT_RB_SPARE	0x8f	/* bits 7:2: reason for the next boot, read and cleared by LK */
+#define PON_REASON_BOOTLOADER	0x02U	/* PON_RESTART_REASON_BOOTLOADER (Linux), FASTBOOT_HARD_RESET_MODE (LK) */
+/* qcom,msm-imem@8600000 / restart_reason@65c in the stock device tree: the same request for a warm reset */
+#define IMEM_RESTART_REASON	0x0860065cUL
+#define RESTART_BOOTLOADER	0x77665500U
 #define PON_RESET_EN		0x80U
 #define PON_TYPE_HARD_RESET	0x07U	/* PON_POWER_OFF_HARD_RESET: power cycle, then a normal boot */
 /* rosy's own device tree (qcom,pon_1): s1-timer 4480 ms, s2-timer 2000 ms, s2-type 7 */
@@ -225,6 +230,24 @@ void board_reset_prepare(void)
 	} else {
 		ps("hold Power about 7 s = hard reset"); pe(GREEN);
 	}
+}
+
+/*
+ * Make the next reset end in fastboot instead of booting the eMMC: the reason code Android's
+ * "reboot bootloader" leaves for LK, in the PMIC's spare register (kept across a hard reset) and in
+ * the SoC's IMEM cookie (kept across a warm reset). Both are volatile and LK clears them when it has
+ * read them; nothing is written to storage. Only on a phone whose PMIC arbiter was recognised.
+ */
+void board_reset_to_fastboot(void)
+{
+	uint8_t v = 0;
+
+	if (pon_apid() < 0)
+		return;
+	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
+	int r = pon_update(PON_SOFT_RB_SPARE, 0xfc, (uint8_t)(PON_REASON_BOOTLOADER << 2));
+	(void)pon_read(PON_SOFT_RB_SPARE, &v);
+	ps("next reset: fastboot (PON 8F="); px(v, 2); pc(')'); pe(r ? RED : GREEN);
 }
 
 static uint64_t smc(uint64_t fn)

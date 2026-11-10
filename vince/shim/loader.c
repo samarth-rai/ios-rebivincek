@@ -165,6 +165,21 @@ static int fdt_chosen_addr(const uint8_t *dtb, const char *prop, uint64_t *out)
 	return 0;
 }
 
+/* Is `arg` one of the space-separated words of the command line? */
+static int has_arg(const char *cmdline, const char *arg)
+{
+	for (int i = 0; i < BOOT_LINE_LENGTH && cmdline[i]; i++) {
+		if (i != 0 && cmdline[i - 1] != ' ')
+			continue;
+		int k = 0;
+		while (arg[k] && i + k < BOOT_LINE_LENGTH && cmdline[i + k] == arg[k])
+			k++;
+		if (!arg[k] && (i + k >= BOOT_LINE_LENGTH || cmdline[i + k] == ' ' || cmdline[i + k] == 0))
+			return 1;
+	}
+	return 0;
+}
+
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
 static void fail(const char *why)
@@ -216,6 +231,14 @@ void loader_main(uint64_t dtb, uint64_t img)
 	const struct payload *p = (const struct payload *)rd_start;
 	if (p->version != 1 || (p->adt_off & 7))
 		fail("bad payload header");
+
+	/*
+	 * Development default: after any reset (time limit, panic, long press of Power) the phone comes back
+	 * in fastboot, ready for the next `fastboot boot`. Boot-arg vincefastboot=0 leaves the next boot alone.
+	 */
+	stage = "fastboot request";
+	if (!has_arg(p->cmdline, "vincefastboot=0"))
+		board_reset_to_fastboot();
 
 	uint64_t pa_of_va_base = p->phys_base - p->virt_base;	/* pa = va + this */
 	ps("phys "); px(p->phys_base, 9); ps(" size "); px(p->mem_size, 9); pe(WHITE);

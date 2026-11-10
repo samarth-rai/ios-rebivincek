@@ -141,8 +141,8 @@ new file mode 100644
 +				vr_limit_s = 0;
 +			}
 +		}
-+		/* like the diagnostics thread: never sleeps, so it needs no timer interrupt */
-+		thread_yield_internal(1);
++		/* timers work on these phones: sleep, do not take a core (the diagnostics thread spins on purpose) */
++		delay_for_interval(500, NSEC_PER_MSEC);
 +	}
 +}
 +
