@@ -1,0 +1,100 @@
+From: rosy port
+Subject: [PATCH] 1016 sweet_usb: a transmit frame whose completion is lost no longer stops the link
+
+On rosy the live log over USB stopped after about two minutes: tx frames stayed at 352 while rx
+went on. tx_busy is cleared only by the IN endpoint's completion event; a completion that is missed,
+or a frame the host never takes, held it for ever. A check every 100 ms completes a frame whose TRB
+the controller has released, and ends one that has waited 2 s. A Start Transfer that fails clears
+tx_busy at once. The status line shows the counts.
+---
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -224,6 +224,8 @@
+ #define DEPCMD_SETTRANSFRESOURCE 2
+ #define DEPCMD_SETSTALL         4
+ #define DEPCMD_STARTTRANSFER    6
++#define DEPCMD_ENDTRANSFER      8
++#define DEPCMD_HIPRI_FORCERM    (1u << 11)
+ #define DEPCMD_DEPSTARTCFG      9
+ #define DEPCMD_CMDACT           (1u << 10)
+ 
+@@ -278,6 +280,10 @@
+ 	unsigned    txq_head, txq_count;
+ 	bool        tx_busy;
+ 	uint64_t    rx_frames, tx_frames;
++	uint32_t    ticks;          /* ud_thread rounds, about 1 ms each */
++	uint32_t    tx_started;     /* ud.ticks when the frame on the IN endpoint was started */
++	uint32_t    tx_rsc;         /* its transfer resource index (for End Transfer) */
++	uint32_t    tx_missed, tx_timeouts;
+ } ud;
+ 
+ static inline void
+@@ -347,7 +353,14 @@
+ 		ud_sync(buf, len);
+ 	}
+ 	uint64_t tpa = ud.dma_pa + trb;
+-	ud_epcmd(ep, DEPCMD_STARTTRANSFER, (uint32_t)(tpa >> 32), (uint32_t)tpa, 0);
++	int r = ud_epcmd(ep, DEPCMD_STARTTRANSFER, (uint32_t)(tpa >> 32), (uint32_t)tpa, 0);
++	if (ep == EP_TX) {
++		ud.tx_rsc = (dwc_rd(DEPCMD(ep)) >> 16) & 0x7f;
++		ud.tx_started = ud.ticks;
++		if (r) {
++			ud.tx_busy = false;     /* not started: no completion will come */
++		}
++	}
+ }
+ 
+ static void
+@@ -598,6 +611,35 @@
+ 	}
+ }
+ 
++/*
++ * A frame on the IN endpoint whose completion never came froze the transmit side for good (seen on
++ * rosy: tx stopped at 352 frames while rx went on, and the live log with it). Every 100 rounds: a
++ * frame the controller has finished (HWO clear in its TRB) counts as completed; one the host has not
++ * taken for 2 s is ended and dropped, so the queue moves again when the host reads once more.
++ */
++static void
++ud_tx_watchdog(void)
++{
++	lck_mtx_lock(ud.lock);
++	if (ud.tx_busy && ud.ticks - ud.tx_started > 200) {
++		volatile uint32_t *t = (volatile uint32_t *)(ud.dma + UD_TRB_TX);
++
++		ud_sync(UD_TRB_TX, 16);
++		if (!(t[3] & TRB_HWO)) {
++			ud.tx_missed++;
++			ud.tx_busy = false;
++			ud_tx_kick_locked();
++		} else if (ud.ticks - ud.tx_started > 2000) {
++			(void)ud_epcmd(EP_TX, DEPCMD_ENDTRANSFER | DEPCMD_HIPRI_FORCERM | (ud.tx_rsc << 16), 0, 0, 0);
++			delay(200);
++			ud.tx_timeouts++;
++			ud.tx_busy = false;
++			ud_tx_kick_locked();
++		}
++	}
++	lck_mtx_unlock(ud.lock);
++}
++
+ static errno_t
+ ud_if_output(ifnet_t ifp, mbuf_t m)
+ {
+@@ -820,9 +862,14 @@
+ 			}
+ 			dwc_wr(GEVNTCOUNT, count);
+ 		}
+-		if ((++ticks % 30000) == 0) {
+-			printf("SWEET USB: ue0 rx %llu tx %llu frames\n", ud.rx_frames, ud.tx_frames);
++		ud.ticks = ++ticks;
++		if ((ticks % 100) == 0 && ud.lock != NULL) {
++			ud_tx_watchdog();
+ 		}
++		if ((ticks % 30000) == 0) {
++			printf("SWEET USB: ue0 rx %llu tx %llu frames (completions missed %u, frames timed out %u, queued %u)\n",
++			    ud.rx_frames, ud.tx_frames, ud.tx_missed, ud.tx_timeouts, ud.txq_count);
++		}
+ 		ud_sleep_ms(1);
+ 	}
+ }
