@@ -1,0 +1,114 @@
+From: rosy port
+Subject: [PATCH] 1021 vince display: a frame is shown when it is swapped, by a presenter thread
+
+A swapped frame waited for a tick of the timer that also sends the vsyncs (every second tick with
+sweetfb_hz=30), was converted inside that handler (GPU wait, a 5 MB copy, 8 ms of conversion, the next
+vsync late by as much), and its surface stayed marked in use until the next frame was on the panel and
+a tick more, although the panel has a copy of its own -- CoreAnimation then has no surface to draw into.
+Now the presenter thread (as on topaz for direct frames) shows a frame at once and lets its surfaces go
+when the copy is made. Boot-arg vincefb_now=0: as before.
+
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp	2026-11-11 15:45:26
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp	2026-11-11 15:45:43
+@@ -243,8 +243,10 @@
+ 	uint16_t     *fXMap;          /* panel column -> logical column */
+ 	uint32_t      fVinceBlits;    /* panel conversions so far, and the last one's time */
+ 	uint32_t      fVinceBlitUS;
++	bool          fVinceNow;      /* frames are shown when they are swapped, by the presenter thread (boot-arg vincefb_now=0: at the tick) */
+ 	bool          startVince(void);
+ 	void          blitVince(void);
++	void          showNowVince(const uint8_t *rec, SweetSurface **held);
+ 
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+ 	IOReturn setProperties(OSObject *properties) APPLE_KEXT_OVERRIDE;
+@@ -599,6 +601,27 @@
+ 	(void)PE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));
+ 	fFlushTicks = (hz == 0 || hz >= 60) ? 1 : 60 / hz;
+ 	fPanelUS = 8333;
++	/*
++	 * A frame used to wait for the next tick of the timer that also sends the vsyncs (every second one with
++	 * sweetfb_hz=30), was converted inside that timer's handler (the GPU waited for, 5 MB copied, 8 ms of
++	 * conversion: the next vsync that much late), and its surface stayed "in use" until the frame after it
++	 * was on the panel and a tick more, as if the panel scanned it -- it does not, the panel has a copy. Now
++	 * a thread of its own shows a frame as soon as it is swapped and lets the surface go when the copy is
++	 * made. Boot-arg vincefb_now=0: as before.
++	 */
++	uint32_t shownow = 1;
++	(void)PE_parse_boot_argn("vincefb_now", &shownow, sizeof(shownow));
++	if (shownow && (fQLock = IOLockAlloc()) != NULL) {
++		thread_t thread;
++		if (kernel_thread_start(&AppleCLCD::presenterMain, this, &thread) == KERN_SUCCESS) {
++			thread_deallocate(thread);
++			fVinceNow = true;
++			IOLog("VINCE FB: frames are shown when they are swapped, by a presenter thread (vincefb_now=0: at the tick)\n");
++		} else {
++			IOLockFree(fQLock);
++			fQLock = NULL;
++		}
++	}
+ 	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
+ 	publishModes();
+ 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
+@@ -1004,7 +1027,7 @@
+ 	 * vsync, 8 ms at most). Held two ticks, the two surfaces CoreAnimation draws into paced it
+ 	 * to 20 frames a second.
+ 	 */
+-	if (directEligible(rec, held) && fQLock != NULL) {
++	if ((fVinceNow || directEligible(rec, held)) && fQLock != NULL) {
+ 		AbsoluteTime deadline;
+ 		clock_interval_to_deadline(200, kMillisecondScale, &deadline);
+ 		IOLockLock(fQLock);
+@@ -1063,7 +1086,9 @@
+ 		memcpy(rec, fQRec[fQFirst], sizeof(rec));
+ 		memcpy(held, fQHeld[fQFirst], sizeof(held));
+ 		IOLockUnlock(fQLock);
+-		if (directEligible(rec, held)) {
++		if (fVinceNow) {
++			showNowVince(rec, held);
++		} else if (directEligible(rec, held)) {
+ 			showDirect(rec, held);
+ 		} else {
+ 			showPending(rec, held);
+@@ -1107,7 +1132,42 @@
+ 		if ((++sweet_fb_swap_count % 1000) == 0) {
+ 			IOLog("SWEET FB: %llu swaps (direct)\n", sweet_fb_swap_count);
+ 		}
++	}
++}
++
++/*
++ * vince (fVinceNow), on the presenter thread: the frame into the panel now. The panel has a copy of its own, so
++ * the surfaces are let go as soon as the copy is made, and what earlier frames still held with them.
++ */
++void
++AppleCLCD::showNowVince(const uint8_t *rec, SweetSurface **heldIn)
++{
++	SweetSurface *held[4], *dropped[4], *shown[4], *retired[4];
++
++	memcpy(held, heldIn, sizeof(held));
++	IOLockLock(fLock);
++	if (fPowerOff) {
++		IOLockUnlock(fLock);
++		showPending(rec, held);                         /* display off: kept for when it is on again */
++		return;
+ 	}
++	memcpy(fPending, rec, SWEET_FB_SWAP_REC_SIZE);          /* (the tick draws it again when the display comes back on) */
++	fDirty = false;
++	memcpy(dropped, fPendHold, sizeof(dropped));
++	bzero(fPendHold, sizeof(fPendHold));
++	memcpy(shown, fShowHold, sizeof(shown));
++	bzero(fShowHold, sizeof(fShowHold));
++	memcpy(retired, fRetireHold, sizeof(retired));
++	bzero(fRetireHold, sizeof(fRetireHold));
++	IOLockUnlock(fLock);
++	sweet_hold_set(dropped, false);
++	sweet_hold_set(shown, false);
++	sweet_hold_set(retired, false);
++	present(rec);
++	sweet_hold_set(held, false);
++	if ((++sweet_fb_swap_count % 1000) == 0) {
++		IOLog("SWEET FB: %llu swaps (shown as swapped)\n", sweet_fb_swap_count);
++	}
+ }
+ 
+ void
