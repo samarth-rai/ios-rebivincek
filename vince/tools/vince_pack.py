@@ -82,6 +82,10 @@ def main():
                          '(360x720 points, most UI does not fit). The matching boot-arg (sweetfb_logical=750x1624 '
                          'or sweetfb_native=1) is appended to the command line if missing')
     ap.add_argument('--native', action='store_true', help='same as --canvas native')
+    ap.add_argument('--artwork', metavar='SUBTYPE@SCALE',
+                    help='rosy only: /product artwork-device-subtype and artwork-scale-factor, e.g. 2436@2 '
+                         '(default: the D22AP values, 2436@3). MobileGestalt caches these on the root image: '
+                         'remove its cache (tools/sweet-root-tweaks.py) when changing them')
     a = ap.parse_args()
     modname, img_name, lk_ramdisk = BOARDS[a.board]
     board = __import__(modname)
@@ -104,6 +108,14 @@ def main():
                     (f'sweetfb_logical={w}x{h}', 'sweetfb_logical=')
         if name not in a.cmdline:
             a.cmdline += ' ' + arg
+    if a.artwork:
+        if not hasattr(board, 'set_artwork'):
+            sys.exit(f'--artwork is not available for --board {a.board}')
+        try:
+            subtype, scale = (int(x) for x in a.artwork.split('@'))
+        except ValueError:
+            sys.exit('--artwork wants SUBTYPE@SCALE, e.g. 2436@2')
+        board.set_artwork(subtype, scale)
     if lk_ramdisk is None:
         lk_ramdisk = board.LK_RAMDISK_PA
     if a.board != 'vince' and (a.loader == ap.get_default('loader') or a.dtb == ap.get_default('dtb')):

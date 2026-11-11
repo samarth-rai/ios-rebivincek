@@ -67,6 +67,16 @@ def set_canvas(name):
     CANVAS_W, CANVAS_H, DISPLAY_SCALE = CANVASES[name]
 
 
+# vince_pack.py --artwork SUBTYPE@SCALE: /product artwork-device-subtype and artwork-scale-factor
+# (MobileGestalt's ArtworkTraits). None = as in the D22AP tree, 2436 at 3x.
+ARTWORK = None
+
+
+def set_artwork(subtype, scale):
+    global ARTWORK
+    ARTWORK = (int(subtype), int(scale))
+
+
 def set_layout(name):
     global PHYS_BASE, MEM_SIZE
     PHYS_BASE, MEM_SIZE = LAYOUTS[name]
@@ -122,6 +132,9 @@ def build(seed=None):
                 ('compatible', cstr('rosy,bluetooth-stub')),
                 ('local-mac-address', MAC_BLUETOOTH + bytes(6)),
             ]))
+        if c.name == 'product' and ARTWORK is not None:
+            c.props = [(k, f, u32(ARTWORK[0]) if k == 'artwork-device-subtype' else
+                        u32(ARTWORK[1]) if k == 'artwork-scale-factor' else v) for k, f, v in c.props]
         if c.name == 'chosen':
             c.props = [(k, f, cstr('rosy-loader') if k in ('firmware-version', 'system-firmware-version') else
                         u32(DISPLAY_SCALE) if k == 'display-scale' else v)

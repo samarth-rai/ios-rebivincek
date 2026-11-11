@@ -26,6 +26,9 @@ screen (image versions v8-v14 in NOTES.md):
   activation      mobileactivationd data ark seeded; the actual Activated state
                   comes from its Hactivation branch, selected by the /chosen
                   security-status properties in tools/mkadt.py
+  MobileGestalt   its answer cache is removed (it is rebuilt on the next boot). The
+                  cache outlives a change of the Device Tree: screen size, scale and
+                  artwork traits of the canvas the image first booted with stay in it
 """
 import glob, os, plistlib, shutil, sys
 
@@ -122,6 +125,35 @@ def audio(root):
         print('StartRecorderServer off', os.path.relpath(conf, root))
 
 
+def mobilegestalt_cache(root):
+    """Remove MobileGestalt's cache. It is keyed by the OS build only, so after a boot with another canvas
+    (vince_pack.py --canvas) or other /product, /chosen properties it still answers with the old ones.
+    Prints the numbers in it that look like a screen, to show what the image had been booted with."""
+    paths = glob.glob(os.path.join(root, 'private/var/containers/Shared/SystemGroup/*/Library/Caches/'
+                                         'com.apple.MobileGestalt.plist'))
+    if not paths:
+        print('MobileGestalt cache: none (never booted, or already removed)')
+    for path in paths:
+        seen = []
+
+        def walk(v, key=''):
+            if isinstance(v, dict):
+                for k, x in v.items():
+                    walk(x, str(k))
+            elif isinstance(v, (list, tuple)):
+                for x in v:
+                    walk(x, key)
+            elif isinstance(v, (int, float)) and not isinstance(v, bool) and \
+                    v in (2, 3, 360, 375, 720, 750, 812, 1125, 1440, 1624, 2436, 326, 458, 463):
+                seen.append(f'{key}={v}')
+        try:
+            walk(load(path))
+        except Exception as e:  # unreadable: remove it all the same
+            seen.append(f'unreadable ({e})')
+        os.remove(path)
+        print(f'MobileGestalt cache removed: {path}\n  screen-like values it had: {" ".join(seen) or "none"}')
+
+
 def main():
     if len(sys.argv) != 2 or not os.path.isdir(os.path.join(sys.argv[1], 'System/Library/xpc')):
         sys.exit(__doc__)
@@ -130,6 +162,7 @@ def main():
     containers(root)
     activation(root)
     audio(root)
+    mobilegestalt_cache(root)
     merge_pref(root, 'com.apple.migration', {
         'LastSystemVersion': BUILD,
         'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': BUILD}})
