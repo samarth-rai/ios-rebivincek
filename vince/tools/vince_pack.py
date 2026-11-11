@@ -73,6 +73,9 @@ def main():
                     help='rosy only: kernel RAM layout. low = 0x50000000 + 768 MiB (no GPU memory carved out); '
                          'wide = 0x48000000 + 896 MiB, of which the kernel keeps 700 MiB, for use with '
                          'boot-arg vinceram3g=1 (adds 1536 MiB) and for the GPU')
+    ap.add_argument('--wlan-node', action='store_true',
+                    help='rosy only: also put /arm-io/wlan and /arm-io/bluetooth nodes with a MAC address in the '
+                         'Apple Device Tree (the addresses are always in /chosen). launchd then starts wifid')
     a = ap.parse_args()
     modname, img_name, lk_ramdisk = BOARDS[a.board]
     board = __import__(modname)
@@ -80,6 +83,10 @@ def main():
         if not hasattr(board, 'set_layout'):
             sys.exit(f'--ram {a.ram} is not available for --board {a.board}')
         board.set_layout(a.ram)
+    if a.wlan_node:
+        if not hasattr(board, 'set_wlan_node'):
+            sys.exit(f'--wlan-node is not available for --board {a.board}')
+        board.set_wlan_node(True)
     if lk_ramdisk is None:
         lk_ramdisk = board.LK_RAMDISK_PA
     if a.board != 'vince' and (a.loader == ap.get_default('loader') or a.dtb == ap.get_default('dtb')):

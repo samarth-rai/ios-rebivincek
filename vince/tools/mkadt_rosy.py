@@ -34,6 +34,25 @@ MEM_SIZE = 0x30000000	# 768 MiB: 0x50000000 - 0x7fffffff
 #         The payload must then fit in 0x43600000-0x48000000 (74 MiB; the packer checks).
 LAYOUTS = {'low': (0x50000000, 0x30000000), 'wide': (0x48000000, 0x38000000)}
 
+# Addresses iBoot puts into /chosen from the phone's syscfg (the real D22AP tree has the properties
+# mac-address-wifi0, mac-address-bluetooth0 and mac-address-ethernet0, 6 bytes each). Without a Wi-Fi
+# address MobileGestalt looks for a wlan device (IONameMatch sdio, wlan, marconi-wifi), finds none and
+# waits for a network controller for ever; on rosy that stopped lsd while it registered the built-in
+# apps (MobileInstallation asks MobileGestalt), and SpringBoard never got past the Apple logo.
+# Synthetic, locally administered addresses: not the phone's.
+MAC_WIFI = bytes.fromhex('02524f535901')        # 02:52:4f:53:59:01
+MAC_BLUETOOTH = bytes.fromhex('02524f535902')
+MAC_ETHERNET = bytes.fromhex('02524f535903')
+# vince_pack.py --wlan-node: also a /arm-io/wlan and /arm-io/bluetooth node with local-mac-address, laid
+# out like the D22AP ones (6 bytes of address, 6 of zeroes). Off by default: launchd starts wifid when the
+# tree has a wlan node (tools/mkadt.py), and there is no Wi-Fi driver here.
+WLAN_NODE = False
+
+
+def set_wlan_node(on):
+    global WLAN_NODE
+    WLAN_NODE = bool(on)
+
 
 def set_layout(name):
     global PHYS_BASE, MEM_SIZE
@@ -76,9 +95,27 @@ def build(seed=None):
                 ('canvas-width', u32(CANVAS_W)),
                 ('canvas-height', u32(CANVAS_H)),
             ]))
+        if c.name == 'arm-io' and WLAN_NODE and not any(k.name == 'wlan' for k in c.children):
+            c.children.append(node('wlan', [
+                ('AAPL,phandle', u32(901)),
+                ('device_type', cstr('wlan')),
+                ('compatible', cstr('rosy,wlan-stub')),
+                ('local-mac-address', MAC_WIFI + bytes(6)),
+            ]))
+            c.children.append(node('bluetooth', [
+                ('AAPL,phandle', u32(902)),
+                ('device_type', cstr('bluetooth')),
+                ('compatible', cstr('rosy,bluetooth-stub')),
+                ('local-mac-address', MAC_BLUETOOTH + bytes(6)),
+            ]))
         if c.name == 'chosen':
             c.props = [(k, f, cstr('rosy-loader') if k in ('firmware-version', 'system-firmware-version') else v)
                        for k, f, v in c.props]
+            have = {k for k, f, v in c.props}
+            for k, v in (('mac-address-wifi0', MAC_WIFI), ('mac-address-bluetooth0', MAC_BLUETOOTH),
+                         ('mac-address-ethernet0', MAC_ETHERNET)):
+                if k not in have:
+                    c.props.append((k, 0, v))
     return root
 
 
