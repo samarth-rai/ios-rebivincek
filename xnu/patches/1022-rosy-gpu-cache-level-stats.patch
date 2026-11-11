@@ -1,0 +1,237 @@
+From: rosy port
+Subject: [PATCH] 1022 vincecache=2 (no cache cleaning at a submit); what the GPU path costs, in the log
+
+Every submit cleaned the cache of every pooled buffer it named, whole: screens and textures of 5 MB each at
+every glFlush of the window server, four or five a frame. That is a cost per pass that does not get smaller
+with a faster GPU clock (8 to 10 ms a pass at 400 MHz as at 100). vincecache=2: the window server maps its
+buffers write-combined again and a submit cleans nothing; the display still reads through a cached mapping of
+the kernel, cleaned first. vincecache=1 is unchanged.
+
+The VINCE FB line now also says the time since boot (its own seconds are ticks), whether the presenter thread
+shows the frames (1021), how many and how long; a VinceGPU line follows with submits, the time in them and in
+cleaning, cpu_prep and fence waits, and what the display waited.
+
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp	2026-11-11 16:13:03
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp	2026-11-11 16:13:26
+@@ -243,6 +243,8 @@
+ 	uint16_t     *fXMap;          /* panel column -> logical column */
+ 	uint32_t      fVinceBlits;    /* panel conversions so far, and the last one's time */
+ 	uint32_t      fVinceBlitUS;
++	uint32_t      fNowShown, fNowBlocked;   /* presenter: frames shown; swaps that waited for a place in its queue */
++	uint64_t      fNowNs, fNowMaxNs;        /* ... time in present() for them, and the longest */
+ 	bool          fVinceNow;      /* frames are shown when they are swapped, by the presenter thread (boot-arg vincefb_now=0: at the tick) */
+ 	bool          startVince(void);
+ 	void          blitVince(void);
+@@ -693,9 +695,16 @@
+ #if defined(VINCE)
+ 	if (fb->fShadowVA != 0 && (count % 600) == 0) {
+ 		/* every 10 s: is iOS connected to the display and drawing into it? */
+-		IOLog("VINCE FB: %llu s: clients %u swaps begun %u shown %u (last %u us) display %s\n",
++		uint64_t up_ns = 0;
++		absolutetime_to_nanoseconds(now, &up_ns);
++		IOLog("VINCE FB: %llu s: clients %u swaps begun %u shown %u (last %u us) display %s; up %llu.%llu s; %s: %u frames, "
++		    "%llu ms in all, longest %llu ms, %u swaps waited for it\n",
+ 		    count / 60, fb->fClients->getCount(), fb->fSwapID, fb->fVinceBlits, fb->fVinceBlitUS,
+-		    fb->fPowerOff ? "off" : "on");
++		    fb->fPowerOff ? "off" : "on", up_ns / 1000000000ull, (up_ns / 100000000ull) % 10,
++		    fb->fVinceNow ? "presenter" : "no presenter (tick)", fb->fNowShown, fb->fNowNs / 1000000, fb->fNowMaxNs / 1000000,
++		    fb->fNowBlocked);
++		fb->fNowMaxNs = 0;
++		vince_gpu_stats_log();
+ 	}
+ #endif
+ 	if (fb->fIntf1 != NULL && (count % 300) == 0) {
+@@ -1031,6 +1040,9 @@
+ 		AbsoluteTime deadline;
+ 		clock_interval_to_deadline(200, kMillisecondScale, &deadline);
+ 		IOLockLock(fQLock);
++		if (fQWaiting >= 2) {
++			fNowBlocked++;
++		}
+ 		while (fQWaiting >= 2) {
+ 			if (IOLockSleepDeadline(fQLock, &fQWaiting, deadline, THREAD_UNINT) == THREAD_TIMED_OUT && fQWaiting >= 2) {
+ 				IOLockUnlock(fQLock);
+@@ -1163,7 +1175,14 @@
+ 	sweet_hold_set(dropped, false);
+ 	sweet_hold_set(shown, false);
+ 	sweet_hold_set(retired, false);
++	uint64_t began = mach_absolute_time(), ns = 0;
+ 	present(rec);
++	absolutetime_to_nanoseconds(mach_absolute_time() - began, &ns);
++	fNowShown++;
++	fNowNs += ns;
++	if (ns > fNowMaxNs) {
++		fNowMaxNs = ns;
++	}
+ 	sweet_hold_set(held, false);
+ 	if ((++sweet_fb_swap_count % 1000) == 0) {
+ 		IOLog("SWEET FB: %llu swaps (shown as swapped)\n", sweet_fb_swap_count);
+--- a/iokit/Kernel/arm/SweetSurface.h	2026-11-11 16:13:03
++++ b/iokit/Kernel/arm/SweetSurface.h	2026-11-11 16:13:26
+@@ -86,6 +86,7 @@
+  * surface before it reads it (vince_surface_sync).
+  */
+ extern "C" bool vince_place_enabled(void);
++extern "C" void vince_gpu_stats_log(void);      /* VinceGPU.cpp: a line of what submits and waits have cost so far */
+ extern "C" uint64_t vince_pool_alloc(uint64_t size);
+ extern "C" void vince_pool_free(uint64_t pa, uint64_t size);
+ extern "C" void vince_surface_sync(SweetSurface *surface);
+--- a/iokit/Kernel/arm/VinceGPU.cpp	2026-11-11 16:13:03
++++ b/iokit/Kernel/arm/VinceGPU.cpp	2026-11-11 16:13:26
+@@ -144,15 +144,56 @@
+  * cleans+invalidates the buffer: before a submit (what the CPU wrote must reach RAM, and no dirty line may later be
+  * written over what the GPU wrote) and after the fence in cpu_prep (the CPU must not read stale lines).
+  */
+-static bool
+-cacheMode(void)
++/*
++ * vincecache=2: the window server's mappings are write-combined again, and nothing is cleaned at a submit -- with
++ * vinceplace=1 the processor no longer reads the frames back, and cleaning every buffer a submit names (whole
++ * textures and screens, tens of megabytes, at every glFlush) cost more than the GPU took. What the kernel reads
++ * (the display, vince_surface_sync) it still reads through a cached mapping of its own, cleaned first. Reading
++ * back what is not drawn in place (glReadPixels) is slow again in this mode.
++ */
++static int
++cacheLevel(void)
+ {
+ 	static int mode = -1;
+ 	if (mode < 0) {
+ 		uint32_t v = 0;
+-		mode = (PE_parse_boot_argn("vincecache", &v, sizeof(v)) && v) ? 1 : 0;
++		mode = (PE_parse_boot_argn("vincecache", &v, sizeof(v)) && v) ? (v == 2 ? 2 : 1) : 0;
+ 	}
+-	return mode == 1;
++	return mode;
++}
++
++static bool
++cacheMode(void)
++{
++	return cacheLevel() == 1;
++}
++
++/* What the window server's GL costs in here, for the line vince_gpu_stats_log() writes (every 10 s of the display's ticks). */
++static volatile uint64_t gStatSubmits, gStatSyncBytes, gStatSyncNs, gStatSubmitNs, gStatPreps, gStatPrepNs, gStatFences, gStatFenceNs,
++    gStatShowNs, gStatShows;
++
++static uint64_t
++statSince(uint64_t began)
++{
++	uint64_t ns;
++	absolutetime_to_nanoseconds(mach_absolute_time() - began, &ns);
++	return ns;
++}
++
++void
++vince_gpu_stats_log(void)
++{
++	uint64_t submits = OSAddAtomic64(0, (volatile SInt64 *)&gStatSubmits);
++	static uint64_t last;
++
++	if (submits == last) {
++		return;                 /* nothing drawn since the last line */
++	}
++	last = submits;
++	IOLog("VinceGPU: %llu submits, %llu ms in them, of which %llu ms cleaning %llu MB of cache; %llu cpu_prep %llu ms; "
++	    "%llu fence waits %llu ms; the display waited %llu times, %llu ms (totals; vincecache level %d)\n",
++	    submits, gStatSubmitNs / 1000000, gStatSyncNs / 1000000, gStatSyncBytes >> 20, (uint64_t)gStatPreps, gStatPrepNs / 1000000,
++	    (uint64_t)gStatFences, gStatFenceNs / 1000000, (uint64_t)gStatShows, gStatShowNs / 1000000, cacheLevel());
+ }
+ 
+ static void
+@@ -168,7 +209,10 @@
+ 			return;
+ 		}
+ 	}
++	uint64_t began = mach_absolute_time();
+ 	sweet_dcache_flush((vm_offset_t)b->kmap->getVirtualAddress(), (unsigned)b->size);
++	OSAddAtomic64((SInt64)statSince(began), (volatile SInt64 *)&gStatSyncNs);
++	OSAddAtomic64((SInt64)b->size, (volatile SInt64 *)&gStatSyncBytes);
+ }
+ 
+ /*
+@@ -397,7 +441,7 @@
+ 
+ 	if (mode < 0) {
+ 		uint32_t place = 0;
+-		mode = PE_parse_boot_argn("vinceplace", &place, sizeof(place)) && place && cacheMode();
++		mode = PE_parse_boot_argn("vinceplace", &place, sizeof(place)) && place && cacheLevel() != 0;
+ 	}
+ 	if (mode == 1) {
+ 		poolLockInit();
+@@ -449,10 +493,12 @@
+ {
+ 	uint32_t fence = s->vinceDrawn;
+ 	uintptr_t va;
++	uint64_t began = mach_absolute_time();
+ 
+ 	if (!s->vincePool) {
+ 		return;
+ 	}
++	OSAddAtomic64(1, (volatile SInt64 *)&gStatShows);
+ 	if (fence != 0 && !gpuWait(fence, 100)) {
+ 		static uint32_t told;
+ 		if (told++ < 8) {
+@@ -463,6 +509,7 @@
+ 	if (va != 0) {
+ 		sweet_dcache_flush((vm_offset_t)va, (unsigned)s->poolSize);
+ 	}
++	OSAddAtomic64((SInt64)statSince(began), (volatile SInt64 *)&gStatShowNs);
+ }
+ 
+ void
+@@ -981,6 +1028,7 @@
+ 	uint32_t words[16];
+ 	uint32_t count = 0;
+ 	IOReturn ret = kIOReturnSuccess;
++	uint64_t began = mach_absolute_time();
+ 
+ 	if (request->nr_bos == 0 || request->nr_cmds == 0 || request->nr_cmds > 16) {
+ 		return kIOReturnBadArgument;
+@@ -1033,6 +1081,8 @@
+ 	if (request->fence == 0) {
+ 		ret = kIOReturnTimeout;
+ 	}
++	OSAddAtomic64(1, (volatile SInt64 *)&gStatSubmits);
++	OSAddAtomic64((SInt64)statSince(began), (volatile SInt64 *)&gStatSubmitNs);
+ 
+ out:
+ 	if (bos != NULL) {
+@@ -1110,9 +1160,17 @@
+ 		break;
+ 	case kMsmGemCpuPrep:
+ 		patience = millisecondsUntil(&r.cpuPrep.timeout);
+-		if (!gpuWait(vince_gpu_last(), patience)) {
+-			ret = kIOReturnBusy;
+-		} else if (cacheMode() && (r.cpuPrep.op & 1 /* MSM_PREP_READ */)) {
++		{
++			uint64_t began = mach_absolute_time();
++			bool done = gpuWait(vince_gpu_last(), patience);
++			OSAddAtomic64(1, (volatile SInt64 *)&gStatPreps);
++			OSAddAtomic64((SInt64)statSince(began), (volatile SInt64 *)&gStatPrepNs);
++			if (!done) {
++				ret = kIOReturnBusy;
++				break;
++			}
++		}
++		if (cacheMode() && (r.cpuPrep.op & 1 /* MSM_PREP_READ */)) {
+ 			IOLockLock(gGPULock);
+ 			b = buffer(r.cpuPrep.handle);
+ 			if (b != NULL) {
+@@ -1129,8 +1187,14 @@
+ 		break;
+ 	case kMsmWaitFence:
+ 		patience = millisecondsUntil(&r.waitFence.timeout);
+-		if (!gpuWait(r.waitFence.fence, patience)) {
+-			ret = kIOReturnTimeout;
++		{
++			uint64_t began = mach_absolute_time();
++			bool done = gpuWait(r.waitFence.fence, patience);
++			OSAddAtomic64(1, (volatile SInt64 *)&gStatFences);
++			OSAddAtomic64((SInt64)statSince(began), (volatile SInt64 *)&gStatFenceNs);
++			if (!done) {
++				ret = kIOReturnTimeout;
++			}
+ 		}
+ 		break;
+ 	case kMsmGemMadvise:

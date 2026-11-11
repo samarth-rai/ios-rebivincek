@@ -151,6 +151,7 @@ jobs:
           if grep -q sweetfb_logical dxb/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp; then echo "ok   SweetFramebuffer.cpp (1019)"; else echo "MISSING patch 1019"; missing=1; fi
           if grep -q 's->width >= 700 && s->height >= 1400' dxb/xnu/iokit/Kernel/arm/SweetSurface.cpp && grep -q 'the GL library need not wait' dxb/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp; then echo "ok   SweetSurface.cpp, SweetFramebuffer.cpp (1020)"; else echo "MISSING patch 1020"; missing=1; fi
           if grep -q showNowVince dxb/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp; then echo "ok   SweetFramebuffer.cpp (1021)"; else echo "MISSING patch 1021"; missing=1; fi
+          if grep -q vince_gpu_stats_log dxb/xnu/iokit/Kernel/arm/VinceGPU.cpp && grep -q fNowBlocked dxb/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp; then echo "ok   VinceGPU.cpp, SweetFramebuffer.cpp (1022)"; else echo "MISSING patch 1022"; missing=1; fi
           echo "board: ROSY=$ROSY"
           [ -z "${missing:-}" ]
 
