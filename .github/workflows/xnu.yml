@@ -149,6 +149,7 @@ jobs:
           if grep -q sweet_surface_scatter dxb/xnu/iokit/Kernel/arm/SweetSurface.cpp && grep -q scatterVA dxb/xnu/iokit/Kernel/arm/SweetSurface.h; then echo "ok   SweetSurface (1017 scattered pages)"; else echo "MISSING patch 1017 in SweetSurface"; missing=1; fi
           if grep -q sweet_lse_emulated dxb/xnu/osfmk/arm64/sleh.c && grep -q 'bus resets' dxb/xnu/bsd/dev/sweet_usb.c; then echo "ok   sleh.c, sweet_usb.c (1018)"; else echo "MISSING patch 1018"; missing=1; fi
           if grep -q sweetfb_logical dxb/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp; then echo "ok   SweetFramebuffer.cpp (1019)"; else echo "MISSING patch 1019"; missing=1; fi
+          if grep -q 's->width >= 700 && s->height >= 1400' dxb/xnu/iokit/Kernel/arm/SweetSurface.cpp && grep -q 'the GL library need not wait' dxb/xnu/iokit/Kernel/arm/SweetFramebuffer.cpp; then echo "ok   SweetSurface.cpp, SweetFramebuffer.cpp (1020)"; else echo "MISSING patch 1020"; missing=1; fi
           echo "board: ROSY=$ROSY"
           [ -z "${missing:-}" ]
 

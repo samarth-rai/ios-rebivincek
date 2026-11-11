@@ -1,0 +1,42 @@
+From: rosy port
+Subject: [PATCH] 1020 in-place surfaces for a smaller canvas; the display says that it waits for the GPU
+
+vinceplace=1 with the 750x1624 canvas: only the default surface was in the pool, the window server's own
+(750 wide, below the 1000x2000 that was asked for) was copied out by the processor, 18 ms a pass on every
+other frame. And the GL library waited for the GPU at each glFlush (25 ms a pass) although present() waits
+itself for a surface of the pool: AppleCLCD now publishes RedwoodWaitsForGPU when vinceplace is on.
+
+--- a/iokit/Kernel/arm/SweetSurface.cpp	2026-11-11 15:41:40
++++ b/iokit/Kernel/arm/SweetSurface.cpp	2026-11-11 15:41:40
+@@ -1108,8 +1108,9 @@
+ 		}
+ 	}
+ 	if (ret == kIOReturnSuccess && s->memory == NULL && vince_place_enabled() && s->bytesPerElement == 4 &&
+-	    s->planeCount <= 1 && s->elementWidth == 1 && s->elementHeight == 1 && s->width >= 1000 && s->height >= 2000 &&
++	    s->planeCount <= 1 && s->elementWidth == 1 && s->elementHeight == 1 && s->width >= 700 && s->height >= 1400 &&
+ 	    s->allocSize <= (48u << 20)) {
++		/* (700 x 1400: the screen may be 750x1624 or 720x1440, sweetfb_logical / sweetfb_native, not only 1125x2436) */
+ 		char who[32];
+ 
+ 		proc_selfname(who, sizeof(who));
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp	2026-11-11 15:41:40
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp	2026-11-11 15:41:40
+@@ -571,6 +571,18 @@
+ 		return false;
+ 	}
+ 	setProperty("IOMFBBrightnessLevel", (unsigned long long)(200u << 16), 32);     /* as on sweet */
++	{
++		/*
++		 * vinceplace=1 (with vincecache=1): present() waits for the GPU before it reads a surface of the pool
++		 * (vince_surface_sync), so the GL library need not wait at every glFlush of the window server -- four
++		 * or five a frame, 8 to 25 ms each (eagl.c reads the property; boot-arg glwait=1 has it wait again).
++		 */
++		uint32_t place = 0, cache = 0;
++		if (PE_parse_boot_argn("vinceplace", &place, sizeof(place)) && place &&
++		    PE_parse_boot_argn("vincecache", &cache, sizeof(cache)) && cache) {
++			setProperty("RedwoodWaitsForGPU", true);
++		}
++	}
+ 	vince_wled_init();                    /* backlight switch for display off (patch 0981) */
+ 	uint32_t accelOn = 1;
+ 	(void)PE_parse_boot_argn("sweetaccel", &accelOn, sizeof(accelOn));
