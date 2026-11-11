@@ -1,0 +1,42 @@
+From: rosy port
+Subject: [PATCH] 1019 sweetfb_logical=WxH, a canvas of any size scaled to the panel
+
+The iPhone X canvas (1125x2436) is 2.74 M pixels drawn, read back from the GPU and scaled for a
+720x1440 panel; sweetfb_native=1 (360x720 points) is fast but narrower than any layout iOS 16 has.
+sweetfb_logical=750x1624 keeps the 375x812 point layout at 2x: 1.22 M pixels.
+
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp	2026-11-11 13:40:49
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp	2026-11-11 13:40:49
+@@ -519,6 +519,32 @@
+ 		/* UIKit only knows the iPhone X layout (see SWEET_FB_LOGICAL_W): scaled down to the panel */
+ 		fLogicalW = SWEET_FB_LOGICAL_W;
+ 		fLogicalH = SWEET_FB_LOGICAL_H;
++	}
++	/*
++	 * Boot-arg sweetfb_logical=WxH (e.g. 750x1624, the 375x812 point layout at 2x): what iOS draws, scaled
++	 * to the panel like the iPhone X canvas. Fewer pixels to draw, read back and scale than 1125x2436, and
++	 * unlike sweetfb_native=1 (360x720 points on rosy) still a layout UIKit knows. The Device Tree's
++	 * canvas-width/-height and display-scale must say the same (vince_pack.py --canvas).
++	 */
++	char logical[24];
++	if (PE_parse_boot_argn("sweetfb_logical", logical, sizeof(logical))) {
++		uint32_t w = 0, h = 0;
++		const char *p = logical;
++		while (*p >= '0' && *p <= '9' && w < 100000) {
++			w = w * 10 + (uint32_t)(*p++ - '0');
++		}
++		if (*p == 'x' || *p == 'X') {
++			p++;
++			while (*p >= '0' && *p <= '9' && h < 100000) {
++				h = h * 10 + (uint32_t)(*p++ - '0');
++			}
++		}
++		if (*p == 0 && w >= 320 && w <= 2048 && h >= 480 && h <= 4096) {
++			fLogicalW = w;
++			fLogicalH = h;
++		} else {
++			IOLog("VINCE FB: sweetfb_logical=%s ignored (want WxH, 320..2048 x 480..4096)\n", logical);
++		}
+ 	}
+ 	fOffX = fOffY = 0;
+ 	fLock = IOLockAlloc();

@@ -76,9 +76,12 @@ def main():
     ap.add_argument('--wlan-node', action='store_true',
                     help='rosy only: also put /arm-io/wlan and /arm-io/bluetooth nodes with a MAC address in the '
                          'Apple Device Tree (the addresses are always in /chosen). launchd then starts wifid')
-    ap.add_argument('--native', action='store_true',
-                    help='rosy only: iOS draws at the panel size (720x1440 at 2x) instead of the iPhone X layout '
-                         'scaled down. Boot with sweetfb_native=1 (appended to the command line here if missing)')
+    ap.add_argument('--canvas', default='x', choices=['x', 'x2', 'native'],
+                    help='rosy only: what iOS draws. x = iPhone X layout 1125x2436 at 3x; x2 = the same 375x812 '
+                         'points at 2x, 750x1624 (2.2 times fewer pixels); native = the panel, 720x1440 at 2x '
+                         '(360x720 points, most UI does not fit). The matching boot-arg (sweetfb_logical=750x1624 '
+                         'or sweetfb_native=1) is appended to the command line if missing')
+    ap.add_argument('--native', action='store_true', help='same as --canvas native')
     a = ap.parse_args()
     modname, img_name, lk_ramdisk = BOARDS[a.board]
     board = __import__(modname)
@@ -91,11 +94,16 @@ def main():
             sys.exit(f'--wlan-node is not available for --board {a.board}')
         board.set_wlan_node(True)
     if a.native:
+        a.canvas = 'native'
+    if a.canvas != 'x':
         if not hasattr(board, 'set_canvas'):
-            sys.exit(f'--native is not available for --board {a.board}')
-        board.set_canvas('native')
-        if 'sweetfb_native=' not in a.cmdline:
-            a.cmdline += ' sweetfb_native=1'
+            sys.exit(f'--canvas {a.canvas} is not available for --board {a.board}')
+        board.set_canvas(a.canvas)
+        w, h, _ = board.CANVASES[a.canvas]
+        arg, name = ('sweetfb_native=1', 'sweetfb_native=') if a.canvas == 'native' else \
+                    (f'sweetfb_logical={w}x{h}', 'sweetfb_logical=')
+        if name not in a.cmdline:
+            a.cmdline += ' ' + arg
     if lk_ramdisk is None:
         lk_ramdisk = board.LK_RAMDISK_PA
     if a.board != 'vince' and (a.loader == ap.get_default('loader') or a.dtb == ap.get_default('dtb')):

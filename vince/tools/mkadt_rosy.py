@@ -54,12 +54,17 @@ def set_wlan_node(on):
     WLAN_NODE = bool(on)
 
 
+CANVASES = {'x': (1125, 2436, 3), 'x2': (750, 1624, 2), 'native': (720, 1440, 2)}
+
+
 def set_canvas(name):
-    """'x' = the iPhone X layout (1125x2436 at 3x, the kernel scales it to the panel); 'native' = the panel
-    itself, 720x1440 at 2x (360x720 points): 2.6 times fewer pixels to draw, read back and scale.
-    'native' needs boot-arg sweetfb_native=1 (SweetFramebuffer.cpp then takes the panel size too)."""
+    """What iOS draws (/arm-io/disp0 canvas size, /chosen display-scale); the kernel scales it to the panel.
+    'x'      the iPhone X layout, 1125x2436 at 3x (375x812 points): 2.74 M pixels
+    'x2'     the same 375x812 points at 2x, 750x1624: 1.22 M pixels. Needs boot-arg sweetfb_logical=750x1624
+    'native' the panel, 720x1440 at 2x (360x720 points): fastest, but narrower than any layout iOS 16 has
+             (most of the UI does not fit). Needs boot-arg sweetfb_native=1"""
     global CANVAS_W, CANVAS_H, DISPLAY_SCALE
-    CANVAS_W, CANVAS_H, DISPLAY_SCALE = {'x': (1125, 2436, 3), 'native': (FB_W, FB_H, 2)}[name]
+    CANVAS_W, CANVAS_H, DISPLAY_SCALE = CANVASES[name]
 
 
 def set_layout(name):
