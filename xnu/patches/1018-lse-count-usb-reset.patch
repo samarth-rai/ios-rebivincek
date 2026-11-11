@@ -1,0 +1,96 @@
+From: rosy port
+Subject: [PATCH] 1018 count emulated atomics; sweet_usb: reconfigure after a bus reset, repeat the link notification
+
+sleh.c: sweet_lse_emulated counts the LSE atomics and LDAPR emulated for user code (0081), so that
+their rate can be printed (vince_reset.c, patch 1010).
+sweet_usb.c: after a bus reset the configuration is forgotten, so the host's SET_CONFIGURATION sets
+the data endpoints up again; the NETWORK_CONNECTION notification is repeated every 5 s while the
+data interface is selected (on rosy the Mac showed the interface inactive while the phone sent on).
+---
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -888,6 +888,9 @@
+  * (machine_routines_asm.s); returns false for anything else (CASP stays
+  * EXC_BAD_INSTRUCTION).
+  */
++/* how many were emulated since boot (osfmk/arm64/vince_reset.c prints the rate); a plain count, races lose little */
++volatile uint64_t sweet_lse_emulated;
++
+ static bool
+ sweet_emulate_lse(arm_saved_state_t *state, uint32_t instr)
+ {
+@@ -943,6 +946,7 @@
+ 		set_saved_state_reg(state, dst, (register_t)old);
+ 	}
+ 	add_saved_state_pc(state, 4);
++	sweet_lse_emulated++;
+ 	return true;
+ }
+ #endif /* SWEET */
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -284,6 +284,7 @@
+ 	uint32_t    tx_started;     /* ud.ticks when the frame on the IN endpoint was started */
+ 	uint32_t    tx_rsc;         /* its transfer resource index (for End Transfer) */
+ 	uint32_t    tx_missed, tx_timeouts;
++	uint32_t    resets;         /* bus resets seen */
+ } ud;
+ 
+ static inline void
+@@ -780,6 +781,32 @@
+ 		uint32_t type = (ev >> 8) & 0xf;
+ 		if (type == 1) {        /* USB reset */
+ 			dwc_wr(DCFG, dwc_rd(DCFG) & ~(0x7fu << 3));
++			/*
++			 * The host starts again from SET_ADDRESS and SET_CONFIGURATION: forget the configuration so
++			 * that ud_configure() sets the data endpoints up and arms the receive side again (it used to
++			 * return at once, and after a reset no frame went either way), and drop what was queued.
++			 */
++			if (ud.lock != NULL) {
++				lck_mtx_lock(ud.lock);
++				if (ud.configured) {
++					/* end what is still on the data endpoints (an idle one answers with a status: ignored) */
++					static const unsigned eps[3] = { EP_RX, EP_TX, EP_INT };
++					for (unsigned i = 0; i < 3; i++) {
++						uint32_t rsc = (dwc_rd(DEPCMD(eps[i])) >> 16) & 0x7f;
++						(void)ud_epcmd(eps[i], DEPCMD_ENDTRANSFER | DEPCMD_HIPRI_FORCERM | (rsc << 16), 0, 0, 0);
++					}
++				}
++				ud.configured = false;
++				ud.data_alt = 0;
++				ud.tx_busy = false;
++				while (ud.txq_count > 0) {
++					mbuf_freem(ud.txq[ud.txq_head]);
++					ud.txq_head = (ud.txq_head + 1) % UD_TXQ;
++					ud.txq_count--;
++				}
++				lck_mtx_unlock(ud.lock);
++			}
++			ud.resets++;
+ 			printf("SWEET USB: bus reset\n");
+ 		} else if (type == 2) { /* connect done */
+ 			uint32_t speed = dwc_rd(DSTS) & 7;
+@@ -866,9 +893,21 @@
+ 		if ((ticks % 100) == 0 && ud.lock != NULL) {
+ 			ud_tx_watchdog();
+ 		}
++		/*
++		 * Say "network connected" again every 5 s while the data interface is selected (a host that
++		 * missed the one notification after SET_INTERFACE, or dropped its link state, showed the
++		 * interface as inactive while the phone kept sending). Only when the last one has gone out.
++		 */
++		if ((ticks % 5000) == 0 && ud.configured && ud.data_alt == 1) {
++			volatile uint32_t *nt = (volatile uint32_t *)(ud.dma + UD_TRB_INT);
++			ud_sync(UD_TRB_INT, 16);
++			if (!(nt[3] & TRB_HWO)) {
++				ud_notify_connected();
++			}
++		}
+ 		if ((ticks % 30000) == 0) {
+-			printf("SWEET USB: ue0 rx %llu tx %llu frames (completions missed %u, frames timed out %u, queued %u)\n",
+-			    ud.rx_frames, ud.tx_frames, ud.tx_missed, ud.tx_timeouts, ud.txq_count);
++			printf("SWEET USB: ue0 rx %llu tx %llu frames (completions missed %u, frames timed out %u, queued %u, bus resets %u, alt %u)\n",
++			    ud.rx_frames, ud.tx_frames, ud.tx_missed, ud.tx_timeouts, ud.txq_count, ud.resets, ud.data_alt);
+ 		}
+ 		ud_sleep_ms(1);
+ 	}

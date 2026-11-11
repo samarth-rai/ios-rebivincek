@@ -10,7 +10,7 @@ diff --git a/osfmk/arm64/vince_reset.c b/osfmk/arm64/vince_reset.c
 new file mode 100644
 --- /dev/null
 +++ b/osfmk/arm64/vince_reset.c
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,178 @@
 +/*
 + * vince / rosy: ways for the kernel to give the phone back. These are unibody phones; a kernel that
 + * waits for ever, or stops in a panic, otherwise runs until the battery is unplugged.
@@ -48,6 +48,7 @@ new file mode 100644
 +extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
 +extern void delay(int usec);
 +extern int (*PE_halt_restart)(unsigned int type);
++extern volatile uint64_t sweet_lse_emulated;    /* osfmk/arm64/sleh.c (patch 1018) */
 +
 +void vince_reset_now(const char *why);
 +void vince_reset_start(void);
@@ -119,12 +120,22 @@ new file mode 100644
 +{
 +	uint64_t t0 = mach_absolute_time();
 +	boolean_t warned = FALSE;
++	uint64_t lse_last = 0;
++	uint32_t lse_at = 0;
 +
 +	for (;;) {
 +		uint64_t ns;
 +		absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
 +		uint32_t s = (uint32_t)(ns / NSEC_PER_SEC);
 +
++		/* every 30 s: how many atomics the kernel emulated for user code (these CPUs have no LSE) */
++		if (s >= lse_at + 30) {
++			uint64_t n = sweet_lse_emulated;
++			printf("VINCE LSE: %llu atomics emulated, %llu a second over the last %u s\n",
++			    (unsigned long long)n, (unsigned long long)((n - lse_last) / (s - lse_at)), s - lse_at);
++			lse_last = n;
++			lse_at = s;
++		}
 +		if (PE_halt_restart != vr_halt_restart) {
 +			PE_halt_restart = vr_halt_restart;     /* nobody else resets this phone */
 +		}

@@ -147,6 +147,7 @@ jobs:
           if grep -q 'SpringBoard,backboardd,lsd' dxb/xnu/bsd/dev/sweet_sample.c; then echo "ok   sweet_sample.c (1015)"; else echo "MISSING patch 1015 in sweet_sample.c"; missing=1; fi
           if grep -q ud_tx_watchdog dxb/xnu/bsd/dev/sweet_usb.c; then echo "ok   sweet_usb.c (1016 tx watchdog)"; else echo "MISSING patch 1016 in sweet_usb.c"; missing=1; fi
           if grep -q sweet_surface_scatter dxb/xnu/iokit/Kernel/arm/SweetSurface.cpp && grep -q scatterVA dxb/xnu/iokit/Kernel/arm/SweetSurface.h; then echo "ok   SweetSurface (1017 scattered pages)"; else echo "MISSING patch 1017 in SweetSurface"; missing=1; fi
+          if grep -q sweet_lse_emulated dxb/xnu/osfmk/arm64/sleh.c && grep -q 'bus resets' dxb/xnu/bsd/dev/sweet_usb.c; then echo "ok   sleh.c, sweet_usb.c (1018)"; else echo "MISSING patch 1018"; missing=1; fi
           echo "board: ROSY=$ROSY"
           [ -z "${missing:-}" ]
 
