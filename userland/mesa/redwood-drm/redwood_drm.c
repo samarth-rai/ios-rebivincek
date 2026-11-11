@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/sysctl.h>
 
 #include <IOKit/IOKitLib.h>
 
@@ -154,10 +155,22 @@ redwood_drm_map(int fd, uint32_t handle, uint64_t size)
 	(void)size;
 	/*
 	 * Linux gives freedreno its buffers write-combined, with no cache of this processor's between
-	 * the program and the memory the GPU sees. So does the kernel's driver here: the memory is
-	 * made that way, and this mapping is as the memory is.
+	 * the program and the memory the GPU sees. The kernel's driver asks for the same, but the cache
+	 * mode of a client mapping is the caller's to give (IOUserClient keeps the caller's option bits
+	 * and drops the driver's), and with none the GPU pool, which the VM does not own, is mapped as
+	 * device memory: a store that is not aligned to its size is a bus error. In backboardd the
+	 * loader (userland/gpu/topaz_inject.c) adds the mode to this call; a program of its own
+	 * (gputest) had none and died in its first memmove. The same choice as there, so that both
+	 * together still name one mode: cached with boot-arg vincecache=1, else write-combined.
 	 */
-	if (IOConnectMapMemory64(connection, handle, mach_task_self(), &address, &mapped, kIOMapAnywhere) != 0) {
+	static int cached = -1;
+	if (cached < 0) {
+		char args[1024] = "";
+		size_t n = sizeof(args) - 1;
+		cached = sysctlbyname("kern.bootargs", args, &n, NULL, 0) == 0 && strstr(args, "vincecache=1") != NULL;
+	}
+	if (IOConnectMapMemory64(connection, handle, mach_task_self(), &address, &mapped,
+	    kIOMapAnywhere | (cached ? kIOMapCopybackCache : kIOMapWriteCombineCache)) != 0) {
 		return (void *)-1;              /* mmap()'s MAP_FAILED */
 	}
 	return (void *)(uintptr_t)address;
