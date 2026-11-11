@@ -76,6 +76,9 @@ def main():
     ap.add_argument('--wlan-node', action='store_true',
                     help='rosy only: also put /arm-io/wlan and /arm-io/bluetooth nodes with a MAC address in the '
                          'Apple Device Tree (the addresses are always in /chosen). launchd then starts wifid')
+    ap.add_argument('--native', action='store_true',
+                    help='rosy only: iOS draws at the panel size (720x1440 at 2x) instead of the iPhone X layout '
+                         'scaled down. Boot with sweetfb_native=1 (appended to the command line here if missing)')
     a = ap.parse_args()
     modname, img_name, lk_ramdisk = BOARDS[a.board]
     board = __import__(modname)
@@ -87,6 +90,12 @@ def main():
         if not hasattr(board, 'set_wlan_node'):
             sys.exit(f'--wlan-node is not available for --board {a.board}')
         board.set_wlan_node(True)
+    if a.native:
+        if not hasattr(board, 'set_canvas'):
+            sys.exit(f'--native is not available for --board {a.board}')
+        board.set_canvas('native')
+        if 'sweetfb_native=' not in a.cmdline:
+            a.cmdline += ' sweetfb_native=1'
     if lk_ramdisk is None:
         lk_ramdisk = board.LK_RAMDISK_PA
     if a.board != 'vince' and (a.loader == ap.get_default('loader') or a.dtb == ap.get_default('dtb')):

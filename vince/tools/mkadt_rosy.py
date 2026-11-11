@@ -54,6 +54,14 @@ def set_wlan_node(on):
     WLAN_NODE = bool(on)
 
 
+def set_canvas(name):
+    """'x' = the iPhone X layout (1125x2436 at 3x, the kernel scales it to the panel); 'native' = the panel
+    itself, 720x1440 at 2x (360x720 points): 2.6 times fewer pixels to draw, read back and scale.
+    'native' needs boot-arg sweetfb_native=1 (SweetFramebuffer.cpp then takes the panel size too)."""
+    global CANVAS_W, CANVAS_H, DISPLAY_SCALE
+    CANVAS_W, CANVAS_H, DISPLAY_SCALE = {'x': (1125, 2436, 3), 'native': (FB_W, FB_H, 2)}[name]
+
+
 def set_layout(name):
     global PHYS_BASE, MEM_SIZE
     PHYS_BASE, MEM_SIZE = LAYOUTS[name]
@@ -62,6 +70,7 @@ FB, FB_SIZE = 0x90001000, 0x2f8000	# 720 * 1440 * 3 bytes, rounded up to 4 KiB
 SWEET_ECID = 0x524f535900000001	# 'ROSY' + 1, synthetic
 # What iOS draws: the iPhone X layout (SWEET_FB_LOGICAL_W/H of SweetFramebuffer.cpp), scaled to the panel
 CANVAS_W, CANVAS_H = 1125, 2436
+DISPLAY_SCALE = 3	# /chosen display-scale (MobileGestalt's screen scale), see set_canvas()
 # Where LK is expected to put the ramdisk (DDR base 0x40000000 + 0x3600000); the packer checks that
 # the payload ends below PHYS_BASE.
 LK_RAMDISK_PA = 0x43600000
@@ -109,7 +118,8 @@ def build(seed=None):
                 ('local-mac-address', MAC_BLUETOOTH + bytes(6)),
             ]))
         if c.name == 'chosen':
-            c.props = [(k, f, cstr('rosy-loader') if k in ('firmware-version', 'system-firmware-version') else v)
+            c.props = [(k, f, cstr('rosy-loader') if k in ('firmware-version', 'system-firmware-version') else
+                        u32(DISPLAY_SCALE) if k == 'display-scale' else v)
                        for k, f, v in c.props]
             have = {k for k, f, v in c.props}
             for k, v in (('mac-address-wifi0', MAC_WIFI), ('mac-address-bluetooth0', MAC_BLUETOOTH),
