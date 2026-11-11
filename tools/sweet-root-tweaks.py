@@ -147,6 +147,11 @@ def main():
                            'SilentICDPUpgrade')})
     merge_pref(root, 'com.apple.managedconfiguration.notbackedup', {
         'LockdownActivationIndicatesCloudConfigurationAvailable': False})
+    # CoreAnimation renders on the CPU here: no parallax or zoom animations, no blurred translucency
+    # (Settings > Accessibility > Motion > Reduce Motion, Display > Reduce Transparency)
+    merge_pref(root, 'com.apple.Accessibility', {
+        'ReduceMotionEnabled': True,
+        'EnhancedBackgroundContrastEnabled': True})
 
 
 if __name__ == '__main__':

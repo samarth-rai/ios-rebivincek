@@ -1,0 +1,142 @@
+From: rosy port
+Subject: [PATCH] 1017 surfaces without the GPU: ordinary wired pages instead of one contiguous piece
+
+rosy at the home screen (logs/usb-cpu4b): 1298 surface creates failed with kIOReturnNoMemory in half
+an hour (PosterBoard 1125x2436, the poster extensions 1326x1326 and 1271x1823 planes), each after two
+vm_page_find_contiguous() scans of all 732,000 pages; the poster extensions then died of "extension
+check-in timeout" in a loop. A surface buffer only has to start on a 16 KiB boundary; the contiguity
+came from how IOBufferMemoryDescriptor provides alignment above the 4 KiB kernel page. Buffers now
+come from kernel_memory_allocate() with a 16 KiB address mask. Boot-arg sweetscatter=0 restores the
+old behaviour; gpu=1 is unchanged (the GPU needs contiguous memory).
+---
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -45,6 +45,9 @@
+ #include <libkern/c++/OSUnserialize.h>
+ #include <libkern/c++/OSSerialize.h>
+ #include <sys/proc.h>
++__BEGIN_DECLS
++#include <vm/vm_kern.h>
++__END_DECLS
+ 
+ /* topaz GPU (TopazAdreno.cpp): the GPU pool below 4 GiB */
+ extern "C" uint64_t topaz_gpu_pool_alloc(uint64_t size, void **va);
+@@ -320,10 +323,52 @@
+ }
+ 
+ OSDefineMetaClassAndStructors(SweetSurface, OSObject);
++
++/*
++ * TOPAZ_4K, without the GPU: pixels in ordinary wired pages. A surface buffer must start on a 16 KiB
++ * boundary (the user page) and IOBufferMemoryDescriptor gives an alignment above the kernel's 4 KiB
++ * page only as one physically contiguous piece. Once userland runs there are no such pieces: on rosy
++ * 1298 creates failed in half an hour (PosterBoard's screens, the posters' 1326x1326 planes), each
++ * after two scans of all of RAM. Here the pages come from kernel_memory_allocate() with a 16 KiB
++ * address mask (its own VM object, offset 0 at that address: both aligned, pages anywhere), and the
++ * surface's memory is a descriptor of that kernel range, mapped into tasks like any other.
++ */
++static bool
++sweet_surface_scatter(SweetSurface *s, uint64_t size)
++{
++	vm_offset_t va = 0;
++
++	size = sweet_round_upage(size);
++	if (kernel_memory_allocate(kernel_map, &va, (vm_size_t)size, (vm_offset_t)(SWEET_UPAGE - 1),
++	    (kma_flags_t)(KMA_DATA | KMA_ZERO), VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS || va == 0) {
++		return false;
++	}
++	IOMemoryDescriptor *md = IOMemoryDescriptor::withAddressRange(va, size, kIODirectionInOut, kernel_task);
++	if (md == NULL || md->prepare() != kIOReturnSuccess) {
++		OSSafeReleaseNULL(md);
++		kmem_free(kernel_map, va, (vm_size_t)size);
++		return false;
++	}
++	s->memory = md;
++	s->scatterVA = va;
++	s->scatterSize = size;
++	return true;
++}
+ 
+ void
+ SweetSurface::free()
+ {
++	if (scatterVA != 0) {
++		OSAddAtomic64(-(SInt64)allocSize, (volatile SInt64 *)&sweet_surface_wired);
++		OSSafeReleaseNULL(kernelMap);
++		if (memory != NULL) {
++			memory->complete();
++			OSSafeReleaseNULL(memory);
++		}
++		/* tasks that still map it keep the pages through their own references to the VM object */
++		kmem_free(kernel_map, scatterVA, (vm_size_t)scatterSize);
++		scatterVA = 0;
++	}
+ 	if (OSDynamicCast(IOBufferMemoryDescriptor, memory) != NULL) {
+ 		OSAddAtomic64(-(SInt64)allocSize, (volatile SInt64 *)&sweet_surface_wired);
+ 	}
+@@ -357,6 +402,9 @@
+ 	if (buffer != NULL) {
+ 		return (uintptr_t)buffer->getBytesNoCopy();
+ 	}
++	if (scatterVA != 0) {
++		return scatterVA;
++	}
+ 	IOLockLock(sweet_surface_lock);
+ 	if (kernelMap == NULL && memory != NULL) {
+ 		kernelMap = memory->map(vincePool ? kIOMapCopybackCache : (scanoutPhys || wrapped) ? kIOMapDefaultCache : kIOMapWriteCombineCache);
+@@ -1243,7 +1291,19 @@
+ 			 * pages came next. (The descriptor keeps them: RedwoodGPU gives them to the GPU.)
+ 			 */
+ 			uint64_t take = gpu_low ? sweet_round_upage(s->allocSize + 64ull * s->bytesPerRow) : s->allocSize;
+-			if (gpu_low || sweet_res_wanted()) {
++#if defined(TOPAZ_4K)
++			/* no GPU to share with: ordinary pages (boot-arg sweetscatter=0: contiguous as before) */
++			static int scatter = -1;
++			if (scatter < 0) {
++				uint32_t on = 1;
++				(void)PE_parse_boot_argn("sweetscatter", &on, sizeof(on));
++				scatter = on != 0;
++			}
++			if (!gpu_low && scatter) {
++				(void)sweet_surface_scatter(s, take);
++			}
++#endif
++			if (s->memory == NULL && (gpu_low || sweet_res_wanted())) {
+ 				sweet_res_fill();
+ 				if (s->width >= 1000 && s->height >= 2000 && s->bytesPerElement == 4) {
+ 					mem = sweet_res_take(take);
+@@ -1254,12 +1314,18 @@
+ 				    kIODirectionInOut | kIOMemoryKernelUserShared | kIOMemoryPhysicallyContiguous, take,
+ 				    0x0000000FFFFFC000ull);
+ 			}
+-			if (mem == NULL) {
++			if (mem == NULL && s->memory == NULL) {
+ 				mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+ 				    kIODirectionInOut | kIOMemoryKernelUserShared, take, SWEET_UPAGE);
+ 			}
+ 		}
+-		if (mem == NULL) {
++		if (s->memory != NULL) {
++			/* sweet_surface_scatter(): zeroed already */
++			s->mapCache = kIOMapDefaultCache;
++			if (!sweet_surface_publish(s)) {
++				ret = kIOReturnNoResources;
++			}
++		} else if (mem == NULL) {
+ 			OSAddAtomic64(-(SInt64)s->allocSize, (volatile SInt64 *)&sweet_surface_wired);
+ 			ret = kIOReturnNoMemory;
+ 		} else {
+--- a/iokit/Kernel/arm/SweetSurface.h
++++ b/iokit/Kernel/arm/SweetSurface.h
+@@ -51,8 +51,10 @@
+ 	bool                      vincePool;    /* vince (vinceplace=1): memory from VinceGPU's pool, which the GPU draws into in place */
+ 	uint64_t                  poolPhys;     /* ... its physical address (= the GPU's), */
+ 	uint32_t                  vinceDrawn;   /* ... and the last submission of VinceGPU that names it */
++	uintptr_t                 scatterVA;    /* 4 KiB kernel: pixels in ordinary (not contiguous) wired pages at this */
++	uint64_t                  scatterSize;  /* ... 16 KiB aligned kernel address; memory describes that range */
+ 
+-	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; drawn = 0; gpuPool = false; poolSize = 0; vincePool = false; poolPhys = 0; vinceDrawn = 0; return OSObject::init(); }
++	bool init() APPLE_KEXT_OVERRIDE { scanoutPhys = 0; scanoutSlot = -1; values = NULL; purgeable = 0; wrapDelta = 0; wrapped = false; drawn = 0; gpuPool = false; poolSize = 0; vincePool = false; poolPhys = 0; vinceDrawn = 0; scatterVA = 0; scatterSize = 0; return OSObject::init(); }
+ 	void free() APPLE_KEXT_OVERRIDE;
+ 
+ 	/* Kernel address of the pixels (mapped on first use), or 0. */
